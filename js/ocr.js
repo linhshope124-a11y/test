@@ -19,7 +19,7 @@ export { getOcrCacheStats, initOcrCache, refreshOcrCacheStats } from './ocr-cach
 
 // ==================== CONFIG ====================
 const DISABLE_AUTO_SAVE = false;
-const DRY_RUN_OCR       = false;   // ⭐ FIX: tắt dry-run để tự lưu thật khi toggle BẬT
+const DRY_RUN_OCR       = false;
 const OCR_TIMEOUT_MS    = 60000;
 
 // ==================== ABORT CONTROLLER ====================
@@ -374,7 +374,7 @@ function parseOcrText(cleanText) {
   const weights = { '0_2':0,'2_4':0,'4_6':0,'6_8':0,'8_10':0,'10_12':0,'12_15':0,'over_15':0 };
   const confidences = {};
 
-  // ⭐ FIX 1: Thêm Ì, Í vào replace (OCR đọc số 1 thành Ì)
+  // FIX 1: Thêm Ì, Í vào replace (OCR đọc số 1 thành Ì)
   const text = cleanText
     .replace(/[–—]/g, '-')
     .replace(/,/g, '.')
@@ -407,14 +407,12 @@ function parseOcrText(cleanText) {
   const totalPos = totalMatch ? totalMatch.index : -1;
   const totalEnd = totalMatch ? totalMatch.index + totalMatch[0].length : -1;
 
-  // ⭐ FIX 2: donRegex accept ¡ Ì Í l I | khi đứng trước "Đơn"
+  // FIX 2: donRegex accept ¡ Ì Í l I | khi đứng trước "Đơn"
   const donNums = [];
   const donRegex = /([\d¡ÌÍlI|]{1,5})\s*[ĐDđd]\s*[ơo]n\b/gi;
   while ((m = donRegex.exec(text)) !== null) {
-    // Bỏ "Tổng N đơn hàng" (chữ thường, không phải "Đơn" hoa)
     if (!/[ĐD]/.test(m[0])) continue;
 
-    // Chuẩn hóa ký tự OCR nhầm thành số 1
     const cleaned = m[1].replace(/[¡ÌÍlI|]/g, '1');
     const val = parseInt(cleaned, 10);
     if (!Number.isFinite(val)) continue;
@@ -438,7 +436,7 @@ function parseOcrText(cleanText) {
     if (totalPos >= 0 && pos >= totalPos && pos <= totalEnd + 3) continue;
     if (val === 0) continue;
     if (val > 99999) continue;
-    // ⭐ FIX 3: Bỏ số dính chữ (h2, ab3) — nhưng CHO PHÉP nếu ký tự trước là "h" và theo sau là "Đơn"
+    // FIX 3: Bỏ số dính chữ (h2, ab3) — nhưng CHO PHÉP nếu ký tự trước là "h" và theo sau là "Đơn"
     if (pos > 0 && /[A-Za-zÀ-ỹ]/.test(text[pos - 1])) {
       const beforeChar = text[pos - 1];
       const afterText = text.slice(endPos, endPos + 12);
@@ -532,7 +530,7 @@ function postProcessFixDigits(parsed) {
   if (parsed.totalFound === parsed.expectedTotal) return null;
 
   const SUBS = [
-    { from: '3', to: '9' },   // ⭐ FIX: 06/10 Lấy (13 → 19)
+    { from: '3', to: '9' },   // 06/10 Lấy (13 → 19)
     { from: '2', to: '9' },
     { from: '1', to: '7' },
     { from: '8', to: '6' },
@@ -543,27 +541,46 @@ function postProcessFixDigits(parsed) {
   const keys = ['0_2', '2_4', '4_6', '6_8', '8_10', '10_12', '12_15', 'over_15'];
   const ordered = ['0_2', ...keys.filter(k => k !== '0_2')];
 
-  for (const key of ordered) {
-    const oldVal = parsed.weights[key];
-    if (!oldVal || oldVal === 0) continue;
-    const str = String(oldVal);
+  // Duyệt 2 vòng:
+  //   Vòng 1 (strictMode=true):  chỉ fix có tỉ lệ đổi <= 3× (an toàn)
+  //   Vòng 2 (strictMode=false): chấp nhận fix bất kỳ → đánh dấu isRisky
+  for (const strictMode of [true, false]) {
+    for (const key of ordered) {
+      const oldVal = parsed.weights[key];
+      if (!oldVal || oldVal === 0) continue;
+      const str = String(oldVal);
 
-    for (let i = 0; i < str.length; i++) {
-      for (const s of SUBS) {
-        if (str[i] !== s.from) continue;
+      for (let i = 0; i < str.length; i++) {
+        for (const s of SUBS) {
+          if (str[i] !== s.from) continue;
 
-        const newVal = parseInt(str.substring(0, i) + s.to + str.substring(i + 1), 10);
-        if (!Number.isFinite(newVal)) continue;
+          const newVal = parseInt(str.substring(0, i) + s.to + str.substring(i + 1), 10);
+          if (!Number.isFinite(newVal)) continue;
 
-        const newTotal = parsed.totalFound - oldVal + newVal;
-        if (newTotal === parsed.expectedTotal) {
-          return {
-            weights: { ...parsed.weights, [key]: newVal },
-            confidences: { ...parsed.confidences, [key]: 75 },
-            expectedTotal: parsed.expectedTotal,
-            totalFound: newTotal,
-            mode: parsed.mode + '+fix' + s.from + s.to
-          };
+          // Chặn fix "vô lý": thay đổi > 3× giá trị gốc → bỏ qua (chỉ vòng 1)
+          const ratio = newVal / Math.max(1, oldVal);
+          if (strictMode && ratio > 3) continue;
+
+          const newTotal = parsed.totalFound - oldVal + newVal;
+          if (newTotal === parsed.expectedTotal) {
+            return {
+              weights: { ...parsed.weights, [key]: newVal },
+              confidences: { ...parsed.confidences, [key]: 75 },
+              expectedTotal: parsed.expectedTotal,
+              totalFound: newTotal,
+              mode: parsed.mode + '+fix' + s.from + s.to,
+              // Thông tin chi tiết để hiện cảnh báo
+              fixInfo: {
+                key,
+                oldVal,
+                newVal,
+                from: s.from,
+                to: s.to,
+                delta: newVal - oldVal,
+                isRisky: ratio > 3
+              }
+            };
+          }
         }
       }
     }
@@ -709,7 +726,7 @@ function validateDistribution(weights) {
 // ==================== AUTO-SAVE ====================
 async function tryAutoSave(r) {
   if (DISABLE_AUTO_SAVE) return false;
-  if (!isAutoSaveOCR()) return false;   // ⭐ Toggle "Tự lưu OCR"
+  if (!isAutoSaveOCR()) return false;
   if (String(r.mode || '').includes('+fix')) return false;
 
   const type = getTypeFromResult(r);
@@ -1080,7 +1097,8 @@ async function processOneFile(file, signal) {
     totalFound: bestResult.totalFound,
     mode: bestResult.mode,
     rawText: bestText,
-    fullDataUrl: rawDataUrl
+    fullDataUrl: rawDataUrl,
+    fixInfo: bestResult.fixInfo || null    // ⭐ NEW
   };
 
   cacheSet(hash, {
@@ -1089,6 +1107,64 @@ async function processOneFile(file, signal) {
   });
 
   return { file: file.name, thumbnail, result, error: null };
+}
+
+// ==================== FIX WARNING BANNER ====================
+function showFixWarning(fixInfo, detectedType) {
+  const old = document.getElementById('fixWarningBanner');
+  if (old) old.remove();
+
+  const labels = {
+    '0_2':'>0 - 2 kg', '2_4':'>2 - 4 kg', '4_6':'>4 - 6 kg', '6_8':'>6 - 8 kg',
+    '8_10':'>8 - 10 kg', '10_12':'>10 - 12 kg', '12_15':'>12 - 15 kg', 'over_15':'>15 kg'
+  };
+  const label = labels[fixInfo.key] || fixInfo.key;
+  const dir = fixInfo.delta > 0 ? 'tăng' : 'giảm';
+  const deltaAbs = Math.abs(fixInfo.delta);
+
+  const isHeavy = fixInfo.isRisky;
+
+  const banner = document.createElement('div');
+  banner.id = 'fixWarningBanner';
+  banner.style.cssText = `
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 2px solid ${isHeavy ? '#dc2626' : '#ea580c'};
+    background: ${isHeavy ? '#fef2f2' : '#fff7ed'};
+    color: ${isHeavy ? '#991b1b' : '#9a3412'};
+    animation: fixPulse 1.4s ease-in-out 3;
+  `;
+  banner.innerHTML = `
+    <div style="font-size:13.5px;font-weight:800;margin-bottom:6px;letter-spacing:-0.01em">
+      ${isHeavy ? '🚨' : '⚠️'} App đã ĐOÁN LẠI SỐ
+    </div>
+    <div style="font-size:12.5px;line-height:1.55;font-weight:600">
+      Dải <b>${label}</b>: OCR đọc <b>${fixInfo.oldVal}</b> → app tự sửa thành <b>${fixInfo.newVal}</b>
+      (${dir} ${deltaAbs} đơn, ký tự ${fixInfo.from} → ${fixInfo.to})
+    </div>
+    <div style="font-size:11.5px;margin-top:8px;padding-top:8px;border-top:1px dashed ${isHeavy ? 'rgba(153,27,27,0.3)' : 'rgba(154,52,18,0.3)'};font-weight:700">
+      👉 <b>BẮT BUỘC</b> đối chiếu ảnh gốc bên dưới trước khi Lưu
+    </div>
+  `;
+
+  // Inject CSS animation (chỉ 1 lần)
+  if (!document.getElementById('fixWarningStyle')) {
+    const style = document.createElement('style');
+    style.id = 'fixWarningStyle';
+    style.textContent = `
+      @keyframes fixPulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(234, 88, 12, 0.4); }
+        50%      { transform: scale(1.015); box-shadow: 0 0 0 6px rgba(234, 88, 12, 0); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const tabs = document.getElementById('modalSubTabGroup');
+  if (tabs && tabs.parentNode) {
+    tabs.parentNode.insertBefore(banner, tabs);
+  }
 }
 
 // ==================== FILL MODAL ====================
@@ -1114,6 +1190,11 @@ export function fillModalFromResult(item) {
   openAddModal();
   document.getElementById('inputDate').value = r.parsedDate;
   switchModalSubTab(r.detectedColorType);
+
+  // ⭐ Hiện banner cảnh báo nếu post-process đã fix số
+  if (r.fixInfo) {
+    showFixWarning(r.fixInfo, r.detectedColorType);
+  }
 
   const prefix = r.detectedColorType === 'del' ? 'del_inp'
                : r.detectedColorType === 'pick' ? 'pick_inp'
@@ -1145,6 +1226,12 @@ export function fillModalFromResult(item) {
   if (lowCount > 0) { msg += ' · có dải đỏ'; toastType = 'error'; }
   else if (midCount > 0) { msg += ' · có dải vàng'; toastType = 'warning'; }
   if (!distCheck.ok) { msg += ' · ⚠️ phân bố bất thường'; toastType = 'error'; }
+
+  // ⭐ Nếu post-process fix → cảnh báo mạnh
+  if (r.fixInfo) {
+    msg += ' · 🔧 app đã sửa số';
+    toastType = 'error';
+  }
 
   if (!distCheck.ok) {
     showDistributionWarning(distCheck, r.detectedColorType);
@@ -1297,6 +1384,7 @@ function renderBatchList() {
       const confIcon  = lowCount > 0 ? ' 🔴' : midCount > 0 ? ' 🟡' : ' 🟢';
       const warnIcon  = (r.expectedTotal !== null && r.totalFound !== r.expectedTotal) ? ' ⚠️' : '';
       const distIcon  = !distCheck.ok ? ' 🟠' : '';
+      const fixIcon   = r.fixInfo ? (r.fixInfo.isRisky ? ' 🚨' : ' 🔧') : '';
       const cacheIcon = item.fromCache ? ' ⚡' : '';
       const type = getTypeFromResult(r);
       const existing = type ? state.appData[type].find(rec => rec.date === r.parsedDate) : null;
@@ -1313,7 +1401,7 @@ function renderBatchList() {
         <div class="batch-info">
           <div class="batch-title">
             <span class="hist-badge-tag ${typeClass}">${typeLabel}</span>
-            <span>${formatDateDisplay(r.parsedDate)}${confIcon}${warnIcon}${distIcon}${cacheIcon}${existingBadge}</span>
+            <span>${formatDateDisplay(r.parsedDate)}${confIcon}${warnIcon}${distIcon}${fixIcon}${cacheIcon}${existingBadge}</span>
           </div>
           <div class="batch-meta">${escapeHtml(item.file)}</div>
           <div class="batch-total">${r.totalFound} đơn</div>
@@ -1468,6 +1556,10 @@ export function applyConfidenceHighlight(confMap, detectedType) {
 }
 
 export function clearAllConfidenceHighlights() {
+  // ⭐ Xóa banner fix (nếu có)
+  const fixBanner = document.getElementById('fixWarningBanner');
+  if (fixBanner) fixBanner.remove();
+
   const prefixes = ['del_inp', 'pick_inp', 'ret_inp'];
   const keys = ['0_2','2_4','4_6','6_8','8_10','10_12','12_15','over_15'];
   prefixes.forEach(pfx => keys.forEach(k => {
