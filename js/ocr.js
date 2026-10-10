@@ -19,7 +19,7 @@ export { getOcrCacheStats, initOcrCache, refreshOcrCacheStats } from './ocr-cach
 
 // ==================== CONFIG ====================
 const DISABLE_AUTO_SAVE = false;
-const DRY_RUN_OCR       = true;
+const DRY_RUN_OCR       = false;   // ⭐ FIX: tắt dry-run để tự lưu thật khi toggle BẬT
 const OCR_TIMEOUT_MS    = 60000;
 
 // ==================== ABORT CONTROLLER ====================
@@ -532,6 +532,7 @@ function postProcessFixDigits(parsed) {
   if (parsed.totalFound === parsed.expectedTotal) return null;
 
   const SUBS = [
+    { from: '3', to: '9' },   // ⭐ FIX: 06/10 Lấy (13 → 19)
     { from: '2', to: '9' },
     { from: '1', to: '7' },
     { from: '8', to: '6' },
@@ -609,8 +610,7 @@ function extractDate(text) {
 
 // =============================================================
 // HẾT PART 1 — Chờ "ok" để gửi PART 2
-// =============================================================
-// =============================================================
+// =============================================================// =============================================================
 // OCR ENGINE — PART 2/2
 // Batch state · Smart Pipeline (6-pass) · Modals · Exports
 // =============================================================
