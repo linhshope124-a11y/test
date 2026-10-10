@@ -1,3 +1,8 @@
+// =============================================================
+// OCR ENGINE — PART 1/2
+// Imports · Config · Worker · Preprocess · Parse · Post-process
+// =============================================================
+
 import { state } from './state.js';
 import { WEIGHT_KEYS } from './config.js';
 import { getTodayIso, formatDateDisplay, generateId } from './utils.js';
@@ -369,10 +374,11 @@ function parseOcrText(cleanText) {
   const weights = { '0_2':0,'2_4':0,'4_6':0,'6_8':0,'8_10':0,'10_12':0,'12_15':0,'over_15':0 };
   const confidences = {};
 
+  // ⭐ FIX 1: Thêm Ì, Í vào replace (OCR đọc số 1 thành Ì)
   const text = cleanText
     .replace(/[–—]/g, '-')
     .replace(/,/g, '.')
-    .replace(/¡/g, '1')
+    .replace(/[¡ÌÍ]/g, '1')
     .split('\n')
     .filter(line => {
       if (/\b\d{1,2}:\d{2}\b/.test(line)) return false;
@@ -401,14 +407,18 @@ function parseOcrText(cleanText) {
   const totalPos = totalMatch ? totalMatch.index : -1;
   const totalEnd = totalMatch ? totalMatch.index + totalMatch[0].length : -1;
 
-  // donRegex accept "ơn" hoặc "on" (mất dấu)
+  // ⭐ FIX 2: donRegex accept ¡ Ì Í l I | khi đứng trước "Đơn"
   const donNums = [];
-  const donRegex = /(\d{1,5})\s*[ĐDđd]\s*[ơo]n\b/gi;
+  const donRegex = /([\d¡ÌÍlI|]{1,5})\s*[ĐDđd]\s*[ơo]n\b/gi;
   while ((m = donRegex.exec(text)) !== null) {
     // Bỏ "Tổng N đơn hàng" (chữ thường, không phải "Đơn" hoa)
     if (!/[ĐD]/.test(m[0])) continue;
 
-    const val = parseInt(m[1], 10);
+    // Chuẩn hóa ký tự OCR nhầm thành số 1
+    const cleaned = m[1].replace(/[¡ÌÍlI|]/g, '1');
+    const val = parseInt(cleaned, 10);
+    if (!Number.isFinite(val)) continue;
+
     const pos = m.index;
     const endPos = pos + m[0].length;
     if (ranges.some(r => pos < r.endPos && endPos > r.pos)) continue;
@@ -428,8 +438,12 @@ function parseOcrText(cleanText) {
     if (totalPos >= 0 && pos >= totalPos && pos <= totalEnd + 3) continue;
     if (val === 0) continue;
     if (val > 99999) continue;
-    // Bỏ số dính chữ (h2, ab3)
-    if (pos > 0 && /[A-Za-zÀ-ỹ]/.test(text[pos - 1])) continue;
+    // ⭐ FIX 3: Bỏ số dính chữ (h2, ab3) — nhưng CHO PHÉP nếu ký tự trước là "h" và theo sau là "Đơn"
+    if (pos > 0 && /[A-Za-zÀ-ỹ]/.test(text[pos - 1])) {
+      const beforeChar = text[pos - 1];
+      const afterText = text.slice(endPos, endPos + 12);
+      if (!/[hH]/.test(beforeChar) || !/[ĐDđd]\s*[ơo]n/i.test(afterText)) continue;
+    }
     nums.push({ value: val, pos, endPos });
   }
   nums.sort((a, b) => a.pos - b.pos);
@@ -513,13 +527,6 @@ function parseOcrText(cleanText) {
 }
 
 // ==================== POST-PROCESS: Fix chữ số nhầm ====================
-/**
- * Font SPX hay đọc nhầm các cặp chữ số do nét mảnh:
- *   9 → 2, 7 → 1, 6 → 8, 5 → 6, 3 → 8
- *
- * Hàm thử đổi từng chữ số để sum khớp total.
- * ⚠️ Đây là ĐOÁN — conf 75% (vàng) + user phải đối chiếu ảnh.
- */
 function postProcessFixDigits(parsed) {
   if (parsed.expectedTotal === null) return null;
   if (parsed.totalFound === parsed.expectedTotal) return null;
@@ -551,7 +558,7 @@ function postProcessFixDigits(parsed) {
         if (newTotal === parsed.expectedTotal) {
           return {
             weights: { ...parsed.weights, [key]: newVal },
-            confidences: { ...parsed.confidences, [key]: 75 },   // vàng: user check
+            confidences: { ...parsed.confidences, [key]: 75 },
             expectedTotal: parsed.expectedTotal,
             totalFound: newTotal,
             mode: parsed.mode + '+fix' + s.from + s.to
@@ -599,7 +606,18 @@ function extractDate(text) {
 
   return getTodayIso();
 }
+
+// =============================================================
+// HẾT PART 1 — Chờ "ok" để gửi PART 2
+// =============================================================
+// =============================================================
+// OCR ENGINE — PART 2/2
+// Batch state · Smart Pipeline (6-pass) · Modals · Exports
+// =============================================================
+
+// ==================== LOG STORAGE ====================
 let _lastOcrLog = '';
+
 // ==================== BATCH STATE ====================
 let batchResults = [];
 let pendingAppend = false;
@@ -691,7 +709,7 @@ function validateDistribution(weights) {
 // ==================== AUTO-SAVE ====================
 async function tryAutoSave(r) {
   if (DISABLE_AUTO_SAVE) return false;
-  if (String(r.mode || '').includes('+fix')) return false;   // đoán chữ số → để user xác nhận
+  if (String(r.mode || '').includes('+fix')) return false;
 
   const type = getTypeFromResult(r);
   if (!type) return false;
@@ -987,11 +1005,6 @@ async function processOneFile(file, signal) {
 
   _checkAborted(signal);
   const statusDesc = document.getElementById('ocrStatusDesc');
-
-  // ═══════════════════════════════════════════════════════════
-  //  SMART PIPELINE — 6 pass (scale diversity)
-  //  80% ảnh dừng ở Pass 1 (~2s). Ảnh khó → thử thêm scale.
-  // ═══════════════════════════════════════════════════════════
 
   let bestResult = null;
   let bestText = '';
