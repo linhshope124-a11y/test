@@ -11,6 +11,11 @@ import { updateAllViews } from './render.js';
 import { initRankUI, initRegionUI, showToast } from './ui.js';
 import { showAlert, showConfirm } from './dialog.js';
 
+// ==================== CONFIG ====================
+const AUTO_BACKUP_DAYS = 7;
+const AUTO_BACKUP_LAST_KEY = 'spx_last_auto_backup';
+const AUTO_BACKUP_SNOOZE_KEY = 'spx_auto_backup_snooze';
+
 // ==================== HELPERS ====================
 function weightsEqual(a, b) {
   return WEIGHT_KEYS.every(k => (parseInt(a[k], 10) || 0) === (parseInt(b[k], 10) || 0));
@@ -28,6 +33,95 @@ function dedupeList(list) {
 
 function totalRecords(data) {
   return (data.delivery?.length || 0) + (data.pickup?.length || 0) + (data.return?.length || 0);
+}
+
+// ⭐ HÀM MỚI: Tạo payload backup
+function buildBackupPayload() {
+  return {
+    version: APP_VERSION,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      rankByMonth:   state.rankByMonth,
+      salaryByMonth: state.salaryByMonth,
+      salaryDays:    state.salaryDays,
+      region:        state.region,
+      theme:         localStorage.getItem(STORAGE_KEYS.theme) || 'light'
+    },
+    data: state.appData
+  };
+}
+
+// ⭐ HÀM MỚI: Tải file thực sự — PHẢI gọi trong click handler đồng bộ
+export function downloadBackupFile(prefix = 'SPX_Data') {
+  const payload = buildBackupPayload();
+  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
+  const a = document.createElement('a');
+  a.setAttribute('href', dataStr);
+  a.setAttribute('download', `${prefix}_${getTodayIso()}.json`);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  markBackupDone();
+}
+
+// ⭐ HÀM MỚI: Ghi timestamp lần backup gần nhất
+export function markBackupDone() {
+  try {
+    localStorage.setItem(AUTO_BACKUP_LAST_KEY, String(Date.now()));
+  } catch {}
+}
+
+// ⭐ HÀM MỚI: Check xem có cần auto backup không
+function needsAutoBackup() {
+  const total = totalRecords(state.appData);
+  if (total === 0) return false;
+
+  // Nếu hôm nay đã bấm "Để sau" → không hỏi lại
+  try {
+    const snooze = localStorage.getItem(AUTO_BACKUP_SNOOZE_KEY);
+    if (snooze === getTodayIso()) return false;
+  } catch {}
+
+  let last = 0;
+  try {
+    last = parseInt(localStorage.getItem(AUTO_BACKUP_LAST_KEY) || '0', 10);
+  } catch {}
+
+  if (!Number.isFinite(last) || last === 0) return true;
+
+  const daysSince = (Date.now() - last) / (1000 * 60 * 60 * 24);
+  return daysSince >= AUTO_BACKUP_DAYS;
+}
+
+// ⭐ HÀM MỚI: Kiểm tra + hỏi user backup nếu quá hạn
+export async function checkAutoBackup() {
+  if (!needsAutoBackup()) return;
+
+  const total = totalRecords(state.appData);
+  const ok = await showConfirm(
+    `📥 Đã ${AUTO_BACKUP_DAYS} ngày chưa backup.\n\n` +
+    `Bạn đang có ${total} bản ghi.\n\n` +
+    `Tải file backup về máy để phòng khi mất dữ liệu?\n\n` +
+    `(File sẽ lưu vào thư mục Downloads)`,
+    {
+      title: '📥 Backup định kỳ',
+      okText: '📥 Lưu file ngay',
+      cancelText: 'Để sau',
+      danger: false
+    }
+  );
+
+  if (ok) {
+    // ⚠️ KHÔNG await — phải trigger download ngay trong stack này
+    // để browser cho phép (user gesture requirement)
+    downloadBackupFile('SPX_Auto_Backup');
+    showToast('Đã tải file backup về máy', 'success', 2500);
+  } else {
+    // Đánh dấu hôm nay đã snooze → không hỏi lại
+    try {
+      localStorage.setItem(AUTO_BACKUP_SNOOZE_KEY, getTodayIso());
+    } catch {}
+  }
 }
 
 // ==================== COPY / PASTE JSON ====================
@@ -115,24 +209,21 @@ export function applyImportedPayload(parsed, mode = 'overwrite') {
     console.log(`[Import] MERGE: thêm ${addedCount}, skip ${removedCount} trùng`);
   }
 
-  persistData();   // có try/catch + báo lỗi khi đầy bộ nhớ
+  persistData();
 
   // ===== Settings =====
   if (importedSettings) {
-    // Region
     if (typeof importedSettings.region === 'string' &&
         (importedSettings.region === 'mien' || importedSettings.region === 'hcm_hn')) {
       state.region = importedSettings.region;
       localStorage.setItem('spx_region', state.region);
     }
 
-    // Theme
     if (typeof importedSettings.theme === 'string') {
       localStorage.setItem(STORAGE_KEYS.theme, importedSettings.theme);
       document.documentElement.setAttribute('data-theme', importedSettings.theme);
     }
 
-    // salaryByMonth
     if (importedSettings.salaryByMonth && typeof importedSettings.salaryByMonth === 'object') {
       if (mode === 'overwrite') {
         state.salaryByMonth = importedSettings.salaryByMonth;
@@ -157,7 +248,6 @@ export function applyImportedPayload(parsed, mode = 'overwrite') {
       }
     }
 
-    // rankByMonth
     if (importedSettings.rankByMonth && typeof importedSettings.rankByMonth === 'object') {
       if (mode === 'overwrite') {
         state.rankByMonth = importedSettings.rankByMonth;
@@ -190,10 +280,6 @@ export function applyImportedPayload(parsed, mode = 'overwrite') {
   return { success: true, addedCount, removedCount, mode };
 }
 
-/**
- * Hỏi user muốn GHI ĐÈ hay THÊM VÀO khi import
- * @returns {Promise<'overwrite'|'merge'|'cancel'>}
- */
 export async function askImportMode(newCount = 0) {
   const currentTotal = totalRecords(state.appData);
   if (currentTotal === 0) return 'overwrite';
@@ -205,7 +291,6 @@ export async function askImportMode(newCount = 0) {
     `• GHI ĐÈ — Xóa hết data cũ, thay bằng dữ liệu mới\n` +
     `• THÊM VÀO — Giữ data cũ + thêm mới (bỏ qua bản ghi trùng)`;
 
-  // Dùng confirm với 2 lựa chọn: OK = ghi đè, Cancel = hỏi tiếp THÊM VÀO hay hủy
   const ok = await showConfirm(msg, {
     title: 'Nạp dữ liệu',
     okText: 'GHI ĐÈ',
@@ -258,23 +343,7 @@ export async function confirmImportJsonString() {
 
 // ==================== EXPORT ====================
 export function exportData() {
-  const payload = {
-    version: APP_VERSION,
-    exportedAt: new Date().toISOString(),
-    settings: {
-      rankByMonth:   state.rankByMonth,
-      salaryByMonth: state.salaryByMonth,
-      salaryDays:    state.salaryDays,
-      region:        state.region,
-      theme:         localStorage.getItem(STORAGE_KEYS.theme) || 'light'
-    },
-    data: state.appData
-  };
-  const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
-  const a = document.createElement('a');
-  a.setAttribute('href', dataStr);
-  a.setAttribute('download', `SPX_Data_${getTodayIso()}.json`);
-  document.body.appendChild(a); a.click(); a.remove();
+  downloadBackupFile('SPX_Data');
 }
 
 // ==================== IMPORT FILE ====================
@@ -343,7 +412,12 @@ export async function restoreFromVault() {
   );
   if (!ok) return;
 
-  state.appData = vault;
+  state.appData = {
+    delivery: sanitizeRecords(vault.delivery),
+    pickup:   sanitizeRecords(vault.pickup),
+    return:   sanitizeRecords(vault.return)
+  };
+  persistData();
   updateAllViews();
   await showAlert('Đã phục hồi dữ liệu!', { title: '✅ Hoàn tất', okText: 'OK' });
 }
