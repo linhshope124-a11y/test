@@ -28,13 +28,14 @@ import {
   saveBatchAll, importBatchItem, removeBatchItem,
   backToBatch, hasBatchPending, showBackToBatchBtn,
   clearOcrCache, getOcrCacheStats,
-  initOcrCache, refreshOcrCacheStats,        // ⭐ PATCH #3
+  initOcrCache, refreshOcrCacheStats,
   handleSharedImage
 } from './ocr.js';
 import { saveRecord, deleteRecord, clearAllHistory } from './entry.js';
 import {
   copyDataJson, openPasteJsonModal, closePasteJsonModal,
-  confirmImportJsonString, exportData, importData, restoreFromVault
+  confirmImportJsonString, exportData, importData, restoreFromVault,
+  checkAutoBackup, downloadBackupFile
 } from './backup.js';
 import {
   updateAllViews, renderReminderBanner, dismissReminderBanner,
@@ -47,7 +48,6 @@ import {
 import { undoLast } from './undo.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { WEIGHT_KEYS } from './config.js';
-// ⭐ PATCH #2: SW bridge
 import { requestPrecacheTesseract } from './sw-bridge.js';
 
 // ================ AUTO-CLEAR INPUT ================
@@ -135,7 +135,6 @@ async function _updateOcrCacheStats() {
   const el = document.getElementById('ocrCacheStats');
   if (!el) return;
   try {
-    // ⭐ PATCH #3: async refresh — đọc IDB rồi mới hiển thị
     const stats = await refreshOcrCacheStats();
     el.innerText = `RAM: ${stats.ramEntries} · IDB: ${stats.lsEntries} · ~${stats.sizeKB} KB (max ${stats.maxEntries}/${stats.maxSizeKB}KB)`;
   } catch (e) {
@@ -165,12 +164,10 @@ function _initHeroExpandState() {
   const wrap = document.getElementById('heroMetricsWrap');
   if (!wrap) return;
   const saved = localStorage.getItem('spx_hero_expanded') === '1';
-  if (saved) {
-    wrap.classList.add('expanded');
-  }
+  if (saved) wrap.classList.add('expanded');
 }
 
-// ================ INFO ICON: HƯỚNG DẪN TÍNH THU NHẬP ================
+// ================ INFO ICON ================
 function _showIncomeInfo() {
   showAlert(
     'Lương 1 công = (LCB + Bưu cục + Tài xế) / số ngày tối đa\n\n' +
@@ -186,20 +183,14 @@ function _showIncomeInfo() {
   );
 }
 
-// ================ OPEN OCR PICKER (defer preload) ================
-/**
- * Mở file picker để quét ảnh.
- * - Lazy-load Tesseract lib (~2MB) chỉ khi user bấm 📷
- * - Yêu cầu SW precache Tesseract runtime → OCR offline lần sau
- */
+// ================ OPEN OCR PICKER ================
 let _ocrPreloadTriggered = false;
 function _openOcrPicker() {
   if (!_ocrPreloadTriggered) {
     _ocrPreloadTriggered = true;
-    preloadTesseractWorker();       // không await — picker mở ngay
-    requestPrecacheTesseract();     // ⭐ PATCH #2: SW tải Tesseract vào cache
+    preloadTesseractWorker();
+    requestPrecacheTesseract();
   }
-
   const input = document.getElementById('ocrFileInput');
   if (input) input.click();
 }
@@ -229,7 +220,6 @@ async function registerSW() {
 
     navigator.serviceWorker.addEventListener('message', e => {
       if (e.data && e.data.type === 'SW_UPDATED') {
-        // ⭐ PATCH #1: không tự reload khi modal đang mở
         if (document.querySelector('.modal-shade.active')) { showUpdateBanner(); return; }
         window.location.reload();
       }
@@ -282,9 +272,7 @@ function showUpdateBanner(newVer) {
   const banner = document.getElementById('updateBanner');
   if (!banner) return;
   const msg = document.getElementById('updateBannerMsg');
-  if (msg) {
-    msg.textContent = newVer ? `Có bản mới ${newVer}!` : 'Có bản mới!';
-  }
+  if (msg) msg.textContent = newVer ? `Có bản mới ${newVer}!` : 'Có bản mới!';
   banner.classList.add('active');
 }
 
@@ -303,9 +291,7 @@ async function applyUpdate() {
     if (worker) {
       worker.postMessage({ type: 'SKIP_WAITING' });
       setTimeout(() => {
-        if (document.visibilityState === 'visible') {
-          window.location.reload();
-        }
+        if (document.visibilityState === 'visible') window.location.reload();
       }, 2500);
     } else {
       window.location.reload();
@@ -349,7 +335,6 @@ async function _consumeSharedFiles() {
   try {
     const cache = await caches.open(SHARED_CACHE_NAME);
     const keys = await cache.keys();
-
     if (keys.length === 0) return [];
 
     const files = [];
@@ -415,15 +400,13 @@ async function _runShareTargetIfNeeded() {
 
   console.log('[ShareTarget] Phát hiện launch từ chia sẻ ảnh');
 
-  // Preload OCR worker vì chắc chắn sẽ dùng
   _ocrPreloadTriggered = true;
   preloadTesseractWorker();
-  requestPrecacheTesseract();      // ⭐ PATCH #2: SW cache Tesseract cho lần sau offline
+  requestPrecacheTesseract();
 
   await new Promise(r => setTimeout(r, 400));
 
   const files = await _consumeSharedFiles();
-
   _cleanShareQueryFromUrl();
 
   if (files.length === 0) {
@@ -489,15 +472,12 @@ Object.assign(window, {
   // REGION
   changeRegion: function(regionKey, el) {
     try {
-      console.log('[Region] change →', regionKey);
       if (!regionKey || (regionKey !== 'mien' && regionKey !== 'hcm_hn')) return;
-
       const oldRegion = state.region;
       if (oldRegion === regionKey) return;
 
       state.region = regionKey;
       localStorage.setItem('spx_region', regionKey);
-      console.log('[Region] state updated:', oldRegion, '→', regionKey);
 
       document.querySelectorAll('.region-pill').forEach(p => p.classList.remove('active'));
       if (el) el.classList.add('active');
@@ -527,6 +507,7 @@ Object.assign(window, {
   saveRecord, deleteRecord, clearAllHistory,
   copyDataJson, openPasteJsonModal, closePasteJsonModal,
   confirmImportJsonString, exportData, importData, restoreFromVault,
+  downloadBackupFile,
   testCloudConnection, pushToCloud, pullFromCloud, initCloudUI, clearCloudToken,
   undoLast,
 
@@ -566,11 +547,9 @@ Object.assign(window, {
 
   toggleHeroMetrics: _toggleHeroMetrics,
 
-  // ⭐ PATCH #2: SW bridge — debug từ console
   isTesseractCached: () => import('./sw-bridge.js').then(m => m.isTesseractCached()),
   clearTesseractCache: () => import('./sw-bridge.js').then(m => m.clearTesseractCache()),
 
-  // ⭐ PATCH #3: OCR cache debug
   debugListOcrCache: () => import('./ocr-cache.js').then(m => m.debugListCache())
 });
 
@@ -578,7 +557,6 @@ Object.assign(window, {
 const _origOpenSettingsModal = openSettingsModal;
 window.openSettingsModal = function() {
   _origOpenSettingsModal();
-  // Async — không cần await, để modal mở trước rồi stats về sau
   setTimeout(() => { _updateOcrCacheStats(); }, 100);
 };
 
@@ -605,10 +583,7 @@ window.addEventListener('spx:storage-error', () => {
   attachAutoClearInputs();
   updateAllViews();
 
-  // ⭐ PATCH #3: khởi tạo IDB cache (migration từ localStorage cũ)
   initOcrCache().catch(e => console.warn('[Init] OCR cache init fail:', e));
-
-  // KHÔNG auto preload Tesseract — chỉ preload khi user bấm 📷
 
   registerSW();
   setTimeout(() => checkVersion(false), 2000);
@@ -617,4 +592,9 @@ window.addEventListener('spx:storage-error', () => {
   window.addEventListener('focus', _maybeAutoCheck);
 
   _runShareTargetIfNeeded();
+
+  // ⭐ AUTO BACKUP CHECK — sau 5 giây (đợi app render xong)
+  setTimeout(() => {
+    checkAutoBackup().catch(e => console.warn('[AutoBackup] check fail:', e));
+  }, 5000);
 })();
