@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#f8fafc">
+<title>Hướng dẫn — SPX Tracker</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<style>
+:root {
+  --bg: #f8fafc; --surface: #ffffff; --surface-2: #f1f5f9; --border: #e5e7eb;
+  --text-1: #0f172a; --text-2: #475569; --text-3: #94a3b8;
+  --accent: #ff5722; --accent-soft: #fff1eb; --accent-border: #ffd5c2;
+  --success: #059669; --success-bg: #ecfdf5; --success-bd: #a7f3d0;
+  --warning: #d97706; --warning-bg: #fffbeb; --warning-bd: #fde68a;
+  --danger: #dc2626; --danger-bg: #fef2f2; --danger-bd: #fecaca;
+}
+[data-theme="dark"] {
+  --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --border: #30363d;
+  --text-1: #e6edf3; --text-2: #adbac7; --text-3: #768390;
+  --accent: #ff6e40; --accent-soft: rgba(255,110,64,0.12); --accent-border: rgba(255,110,64,0.3);
+  --success: #3fb950; --success-bg: rgba(63,185,80,0.12); --success-bd: rgba(63,185,80,0.3);
+  --warning: #d29922; --warning-bg: rgba(210,153,34,0.12); --warning-bd: rgba(210,153,34,0.3);
+  --danger: #f85149; --danger-bg: rgba(248,81,73,0.12); --danger-bd: rgba(248,81,73,0.3);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+body {
+  background: var(--bg); color: var(--text-1);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+  padding-bottom: 40px;
+}
+.g-header {
+  position: sticky; top: 0; z-index: 50; background: var(--bg);
+  padding: 12px 16px 8px; padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  max-width: 700px; margin: 0 auto; border-bottom: 1px solid var(--border);
+}
+.g-header-inner {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  padding: 8px 10px; display: flex; align-items: center; gap: 10px;
+  box-shadow: 0 2px 14px rgba(15,23,42,0.06);
+}
+.g-back-btn {
+  width: 40px; height: 40px; flex-shrink: 0; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 12px; cursor: pointer;
+  color: var(--text-1); text-decoration: none; transition: all 0.15s;
+}
+.g-back-btn:active { transform: scale(0.94); }
+.g-back-btn svg { width: 20px; height: 20px; }
+.g-title { flex: 1; font-size: 14.5px; font-weight: 700; letter-spacing: -0.015em; }
+.g-shell { max-width: 700px; margin: 0 auto; padding: 0 16px; }
+.g-hero {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  padding: 20px; margin-top: 14px; position: relative; overflow: hidden;
+  background-image: radial-gradient(140% 100% at 100% 0%, var(--accent-soft) 0%, transparent 55%);
+}
+.g-hero::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent) 0%, #ea4512 60%, var(--accent) 100%);
+}
+.g-hero-title { font-size: 22px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.15; margin-bottom: 6px; }
+.g-hero-sub { font-size: 12.5px; color: var(--text-3); font-weight: 500; }
+.g-hero-version {
+  display: inline-block; background: var(--accent-soft); border: 1px solid var(--accent-border);
+  color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  font-weight: 700; padding: 3px 9px; border-radius: 999px; margin-top: 10px;
+}
+.g-toc { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px; margin-top: 14px; }
+.g-toc-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.9px; color: var(--text-3); margin-bottom: 10px; }
+.g-toc-list { display: grid; gap: 6px; }
+.g-toc-item {
+  display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+  text-decoration: none; color: var(--text-1); font-size: 13px; font-weight: 600;
+  transition: all 0.15s;
+}
+.g-toc-item:active { transform: scale(0.985); background: var(--accent-soft); border-color: var(--accent-border); }
+.g-toc-num {
+  width: 24px; height: 24px; flex-shrink: 0; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--accent); color: #fff;
+  font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px; border-radius: 6px;
+}
+.g-toc-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-toc-arrow { color: var(--text-3); font-size: 16px; line-height: 1; }
+.g-section {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  padding: 20px; margin-top: 14px; scroll-margin-top: 80px;
+}
+.g-section-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.g-section-num {
+  width: 30px; height: 30px; flex-shrink: 0; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--accent); color: #fff;
+  font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 13px;
+  border-radius: 8px; box-shadow: 0 2px 8px rgba(255,87,34,0.25);
+}
+.g-section-title { font-size: 16px; font-weight: 800; letter-spacing: -0.02em; }
+.g-section-icon { margin-left: auto; font-size: 20px; opacity: 0.8; }
+.g-h3 { font-size: 14px; font-weight: 700; margin: 16px 0 8px; letter-spacing: -0.01em; }
+.g-h3:first-child { margin-top: 0; }
+.g-p { font-size: 13px; color: var(--text-2); line-height: 1.65; margin-bottom: 10px; }
+.g-p:last-child { margin-bottom: 0; }
+.g-p b { color: var(--text-1); font-weight: 700; }
+.g-p code {
+  font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 4px; color: var(--accent); font-weight: 600;
+  word-break: break-all;
+}
+.g-list { list-style: none; padding: 0; margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; }
+.g-list li { position: relative; padding-left: 24px; font-size: 13px; color: var(--text-2); line-height: 1.55; }
+.g-list li::before { content: ''; position: absolute; left: 8px; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.g-list li b { color: var(--text-1); font-weight: 700; }
+.g-olist { padding-left: 22px; margin: 0 0 10px; font-size: 13px; color: var(--text-2); line-height: 1.7; }
+.g-olist li { margin-bottom: 6px; padding-left: 4px; }
+.g-olist li b { color: var(--text-1); font-weight: 700; }
+.g-note {
+  background: var(--accent-soft); border: 1px solid var(--accent-border); border-radius: 12px;
+  padding: 12px 14px; font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin: 12px 0;
+}
+.g-note b { color: var(--accent); font-weight: 700; }
+.g-note-title { font-weight: 800; color: var(--accent); display: block; margin-bottom: 4px; font-size: 12px; }
+.g-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+.g-card-title { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; }
+.g-card p { font-size: 12px; color: var(--text-2); line-height: 1.55; margin: 0; }
+.g-card p + p { margin-top: 6px; }
+.g-card b { color: var(--text-1); font-weight: 700; }
+.g-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 10px 0; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+.g-table th {
+  background: var(--surface-2); text-align: left; padding: 10px 12px; font-size: 10.5px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+}
+.g-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text-2); vertical-align: top; }
+.g-table tr:last-child td { border-bottom: none; }
+.g-table b { color: var(--text-1); font-weight: 700; }
+.g-code {
+  background: #0d1117; color: #c9d1d9; font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px; line-height: 1.55; padding: 12px 14px; border-radius: 10px;
+  overflow-x: auto; margin: 10px 0; border: 1px solid #30363d; white-space: pre;
+}
+.g-code b { color: #ff6e40; font-weight: 700; }
+.g-badge {
+  display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 8px;
+  border-radius: 6px; border: 1px solid;
+}
+.g-badge-accent { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
+.g-badge-success { color: var(--success); background: var(--success-bg); border-color: var(--success-bd); }
+.g-badge-warning { color: var(--warning); background: var(--warning-bg); border-color: var(--warning-bd); }
+.g-badge-danger { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-bd); }
+.g-screenshot-wrap { margin: 14px 0; border-radius: 14px; overflow: hidden; background: var(--surface-2); border: 1px solid var(--border); }
+.g-screenshot { width: 100%; height: auto; display: block; cursor: zoom-in; }
+.g-screenshot-caption { padding: 10px 14px; font-size: 11.5px; color: var(--text-3); font-weight: 600; text-align: center; border-top: 1px solid var(--border); background: var(--surface-2); }
+#gLightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: none; align-items: center; justify-content: center; z-index: 999; padding: 16px; }
+#gLightbox.active { display: flex; }
+#gLightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+#gLightbox .g-lb-close {
+  position: absolute; top: calc(12px + env(safe-area-inset-top, 0)); right: 12px;
+  width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.15);
+  color: #fff; border: none; font-size: 22px; font-weight: 700; cursor: pointer;
+}
+.g-footer { margin-top: 24px; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; text-align: center; }
+.g-footer-text { font-size: 12px; color: var(--text-3); line-height: 1.6; margin-bottom: 14px; }
+.g-footer-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 13px 22px; background: var(--accent); color: #fff; border: none;
+  border-radius: 12px; font-family: inherit; font-size: 13.5px; font-weight: 700;
+  cursor: pointer; text-decoration: none; width: 100%; max-width: 320px;
+  box-shadow: 0 4px 14px rgba(255,87,34,0.3);
+}
+.g-footer-btn:active { transform: scale(0.97); }
+.g-footer-btn svg { width: 18px; height: 18px; }
+@media (max-width: 360px) {
+  .g-section { padding: 16px; }
+  .g-hero-title { font-size: 20px; }
+  .g-section-title { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+
+<header class="g-header">
+  <div class="g-header-inner">
+    <a href="./index.html" class="g-back-btn" aria-label="Quay lại">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="19" y1="12" x2="5" y2="12"/>
+        <polyline points="12 19 5 12 12 5"/>
+      </svg>
+    </a>
+    <div class="g-title">Hướng dẫn sử dụng</div>
+  </div>
+</header>
+
+<div class="g-shell">
+
+  <section class="g-hero">
+    <div class="g-hero-title">SPX Tracker</div>
+    <div class="g-hero-sub">Theo dõi sản lượng & tính điểm phúc lợi SPX Express</div>
+    <span class="g-hero-version">v1</span>
+  </section>
+
+  <nav class="g-toc">
+    <div class="g-toc-title">📌 Mục lục</div>
+    <div class="g-toc-list">
+      <a href="#s1" class="g-toc-item"><span class="g-toc-num">1</span><span class="g-toc-text">Cài đặt</span><span class="g-toc-arrow">›</span></a>
+      <a href="#s2" class="g-toc-item"><span class="g-toc-num">2</span><span class="g-toc-text">Quét ảnh OCR ⭐</span><span class="g-toc-arrow">›</span></a>
+      <a href="#s3" class="g-toc-item"><span class="g-toc-num">3</span><span class="g-toc-text">Lương + Rule Tài xế ⭐</span><span class="g-toc-arrow">›</span></a>
+      <a href="#s4" class="g-toc-item"><span class="g-toc-num">4</span><span class="g-toc-text">Hạng thưởng</span><span class="g-toc-arrow">›</span></a>
+      <a href="#s5" class="g-toc-item"><span class="g-toc-num">5</span><span class="g-toc-text">Backup Cloud ⭐</span><span class="g-toc-arrow">›</span></a>
+      <a href="#s6" class="g-toc-item"><span class="g-toc-num">6</span><span class="g-toc-text">Xử lý sự cố</span><span class="g-toc-arrow">›</span></a>
+    </div>
+  </nav>
+
+  <!-- ============ 1. CÀI ĐẶT ============ -->
+  <section class="g-section" id="s1">
+    <div class="g-section-head">
+      <div class="g-section-num">1</div>
+      <div class="g-section-title">Cài đặt</div>
+      <span class="g-section-icon">📲</span>
+    </div>
+
+    <h3 class="g-h3">🌐 URL</h3>
+    <p class="g-p"><code>https://linhshope124-a11y.github.io/spx/</code></p>
+
+    <h3 class="g-h3">📱 Cài như app</h3>
+    <div class="g-card">
+      <div class="g-card-title">🤖 Android (Chrome)</div>
+      <p>Mở URL → <b>⋮</b> → <b>Thêm vào màn hình chính</b></p>
+    </div>
+    <div class="g-card">
+      <div class="g-card-title">🍎 iPhone (Safari)</div>
+      <p>Mở URL → <b>Chia sẻ</b> → <b>Thêm vào màn hình chính</b></p>
+    </div>
+
+    <div class="g-note">
+      <span class="g-note-title">💡 Bắt buộc cài app</span>
+      Muốn dùng tính năng <b>Chia sẻ ảnh từ Gallery</b> → phải cài app vào màn hình chính trước.
+    </div>
+  </section>
+
+  <!-- ============ 2. OCR + SHARE ============ -->
+  <section class="g-section" id="s2">
+    <div class="g-section-head">
+      <div class="g-section-num">2</div>
+      <div class="g-section-title">Quét ảnh OCR</div>
+      <span class="g-section-icon">📷</span>
+    </div>
+
+    <h3 class="g-h3">📸 Bước 1 — Chụp màn hình SPX</h3>
+    <p class="g-p">Mở app SPX → vào <b>"Chi tiết đơn theo ngày"</b> → chụp màn hình (nguồn + volume-).</p>
+
+    <h3 class="g-h3">⚡ Bước 2 — Quét (2 cách)</h3>
+    <div class="g-card">
+      <div class="g-card-title">📷 Cách A — Quét trong app</div>
+      <p>Mở SPX Tracker → bấm <b>📷</b> giữa bottom nav → chọn ảnh (1 hoặc nhiều)</p>
+    </div>
+    <div class="g-card">
+      <div class="g-card-title">📤 Cách B — Chia sẻ từ Gallery (nhanh hơn)</div>
+      <p>Gallery → chọn ảnh → <b>Chia sẻ</b> → chọn <b>SPX Tracker</b></p>
+      <p style="margin-top:6px"><span class="g-badge g-badge-success">OK</span> Android — share nhiều ảnh cùng lúc</p>
+      <p><span class="g-badge g-badge-warning">LIMIT</span> iOS — chỉ 1 ảnh/lần</p>
+    </div>
+
+    <h3 class="g-h3">✅ Bước 3 — Kết quả</h3>
+    <ul class="g-list">
+      <li>App <b>tự nhận diện tab</b> (Giao / Lấy / Hoàn) — không cần chọn tay</li>
+      <li>Score ≥92 + checksum khớp → <b>tự lưu</b> ✅</li>
+      <li>Fail hoặc cần check → hiện modal đối chiếu ảnh gốc</li>
+    </ul>
+
+    <div class="g-note">
+      <span class="g-note-title">🎨 Màu viền ô khi cần check</span>
+      🟢 Xanh = OK · 🟡 Vàng = xem lại · 🔴 Đỏ = sửa tay<br>
+      🟠 <b>Cam = phân bố lạ</b> (số vô lý, phải đối chiếu ảnh)
+    </div>
+
+    <div class="g-note">
+      <span class="g-note-title">📚 Quét nhiều ảnh cùng lúc</span>
+      Chọn nhiều ảnh → app xử lý tuần tự → ảnh nào pass tự lưu → ảnh cần check vào <b>danh sách Batch</b> để xử lý riêng.
+    </div>
+  </section>
+
+  <!-- ============ 3. LƯƠNG + RULE TÀI XẾ ============ -->
+  <section class="g-section" id="s3">
+    <div class="g-section-head">
+      <div class="g-section-num">3</div>
+      <div class="g-section-title">Lương + Rule Tài xế</div>
+      <span class="g-section-icon">💰</span>
+    </div>
+
+    <h3 class="g-h3">📍 Vị trí</h3>
+    <p class="g-p">Tab <b>T.Quan</b> → mở mục <b>Thu nhập</b> → nhập 3 ô.</p>
+
+    <h3 class="g-h3">💵 3 ô nhập</h3>
+    <table class="g-table">
+      <thead><tr><th>Ô</th><th>Ý nghĩa</th></tr></thead>
+      <tbody>
+        <tr><td><b>LCB</b></td><td>Lương cơ bản</td></tr>
+        <tr><td><b>Bưu cục</b></td><td>Phụ cấp bưu cục</td></tr>
+        <tr><td><b>Tài xế</b></td><td>Phụ cấp tài xế (xem rule bên dưới)</td></tr>
+      </tbody>
+    </table>
+    <p class="g-p">Bấm <b>"Lưu cấu hình tháng này"</b> để lưu.</p>
+
+    <div class="g-note">
+      <span class="g-note-title">⚡ RULE QUAN TRỌNG — Phụ cấp Tài xế</span>
+      <b>Tài xế chỉ được cộng vào lương khi Đơn Giao ≥ 1.500/tháng.</b><br><br>
+      • <b>&lt; 1.500</b> → không cộng (bỏ qua ô Tài xế)<br>
+      • <b>≥ 1.500</b> → cộng đầy đủ<br><br>
+      → App hiện <b>banner cảnh báo</b> ngay dưới ô nhập, báo còn thiếu bao nhiêu đơn.
+    </div>
+
+    <h3 class="g-h3">📐 Công thức</h3>
+    <pre class="g-code">Lương 1 công = (LCB + Bưu cục + Tài xế) / ngày tối đa
+
+Ngày tối đa:
+  • Tháng 2  → 24 ngày
+  • Tháng khác → 26 ngày
+
+Số công = đếm ngày có:
+  Giao + (Lấy / 6) + Hoàn ≥ ngưỡng
+  • Miền:   ≥60 = 1 công, ≥30 = 0.5 công
+  • HCM/HN: ≥80 = 1 công, ≥40 = 0.5 công
+
+Tích lũy = Lương 1 công × số công</pre>
+
+    <div class="g-note">
+      <span class="g-note-title">📅 Lưu theo tháng</span>
+      Lương + Hạng lưu <b>riêng theo từng tháng</b>. Đổi tháng → tự chuyển cấu hình tháng đó.<br>
+      Riêng <b>Khu vực</b> (Miền / HCM-HN) chọn 1 lần, áp dụng mọi tháng.
+    </div>
+  </section>
+
+  <!-- ============ 4. HẠNG THƯỞNG ============ -->
+  <section class="g-section" id="s4">
+    <div class="g-section-head">
+      <div class="g-section-num">4</div>
+      <div class="g-section-title">Hạng thưởng</div>
+      <span class="g-section-icon">🏆</span>
+    </div>
+
+    <table class="g-table">
+      <thead><tr><th>Hạng</th><th>Bonus</th></tr></thead>
+      <tbody>
+        <tr><td>Chuẩn (không chọn)</td><td><b>+0%</b></td></tr>
+        <tr><td><b>Đồng</b></td><td><span class="g-badge g-badge-accent">+10%</span></td></tr>
+        <tr><td><b>Bạc</b></td><td><span class="g-badge g-badge-accent">+15%</span></td></tr>
+        <tr><td><b>Vàng</b></td><td><span class="g-badge g-badge-accent">+20%</span></td></tr>
+        <tr><td><b>Bạch Kim</b></td><td><span class="g-badge g-badge-accent">+22%</span></td></tr>
+        <tr><td><b>Kim Cương</b></td><td><span class="g-badge g-badge-accent">+26%</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3 class="g-h3">🎯 Cách chọn</h3>
+    <ul class="g-list">
+      <li><b>Chạm</b> pill → chọn hạng cho tháng đang xem</li>
+      <li><b>Giữ 0.5s</b> pill đang active → bỏ chọn (về Chuẩn)</li>
+      <li>Chuyển tháng → hạng tự đổi theo tháng đó</li>
+    </ul>
+
+    <pre class="g-code">Thưởng = Gốc × %hạng
+
+VD: Gốc 1.100, hạng Vàng (+20%)
+    → Thưởng = 220</pre>
+  </section>
+
+  <!-- ============ 5. BACKUP CLOUD ============ -->
+  <section class="g-section" id="s5">
+    <div class="g-section-head">
+      <div class="g-section-num">5</div>
+      <div class="g-section-title">Backup Cloud</div>
+      <span class="g-section-icon">☁️</span>
+    </div>
+
+    <div class="g-note">
+      <span class="g-note-title">💾 Tại sao cần</span>
+      Xóa cache trình duyệt / reset máy → mất data. Cloud backup giúp khôi phục.
+    </div>
+
+    <h3 class="g-h3">🔑 Setup 1 lần (5 phút)</h3>
+    <ol class="g-olist">
+      <li>Vào <code>github.com/settings/tokens</code> (đăng nhập GitHub)</li>
+      <li>Bấm <b>Generate new token (classic)</b></li>
+      <li>Note: <code>spx-backup</code> · Expiration: <b>No expiration</b></li>
+      <li>Scope: tích <b>gist</b> → bấm <b>Generate</b></li>
+      <li>Copy token <code>ghp_...</code></li>
+      <li>Mở app → Menu ☰ → <b>Backup & Cloud</b> → dán token</li>
+      <li>Bấm <b>🔌 Kiểm tra</b> → <b>☁️ Backup</b> (tạo Gist lần đầu)</li>
+      <li>Tích <b>"Tự động backup"</b> → từ đó tự sync mỗi thay đổi</li>
+    </ol>
+
+    <h3 class="g-h3">🔄 Khôi phục khi mất data</h3>
+    <ol class="g-olist">
+      <li>Menu ☰ → <b>Backup & Cloud</b></li>
+      <li>Bấm <b>⬇️ Khôi phục từ Cloud</b></li>
+      <li>Chọn <b>GHI ĐÈ</b> (xóa hết cũ) hoặc <b>THÊM VÀO</b> (giữ cũ + thêm mới)</li>
+    </ol>
+
+    <h3 class="g-h3">📁 Backup file JSON (offline)</h3>
+    <ul class="g-list">
+      <li><b>💾 Lưu file</b> — tải file về máy</li>
+      <li><b>📥 Nạp file</b> — chọn file JSON đã lưu</li>
+      <li><b>🔄 Phục hồi tự động</b> — khôi phục từ vault (bản sao lưu ngầm)</li>
+    </ul>
+  </section>
+
+  <!-- ============ 6. XỬ LÝ SỰ CỐ ============ -->
+  <section class="g-section" id="s6">
+    <div class="g-section-head">
+      <div class="g-section-num">6</div>
+      <div class="g-section-title">Xử lý sự cố</div>
+      <span class="g-section-icon">🔧</span>
+    </div>
+
+    <h3 class="g-h3">🐛 OCR đọc sai số</h3>
+    <p class="g-p">Chụp lại ảnh <b>rõ nét hơn</b> (đủ sáng, không rung). Nếu vẫn sai → mở modal → sửa tay số bị sai → Lưu.</p>
+
+    <h3 class="g-h3">🎯 Không nhận diện được tab</h3>
+    <p class="g-p">App hiện modal <b>"Chọn loại đơn"</b>. Chọn <b>Giao / Lấy / Hoàn</b> thủ công (1 lần/ảnh). Ảnh tiếp theo nếu rõ sẽ tự nhận.</p>
+
+    <h3 class="g-h3">🔄 App không cập nhật bản mới</h3>
+    <ol class="g-olist">
+      <li>Menu ☰ → <b>🔄 Kiểm tra cập nhật</b></li>
+      <li>Có banner <b>"🎉 Có bản mới"</b> → bấm <b>Cập nhật</b></li>
+      <li>Nếu vẫn cũ → gỡ app → cài lại</li>
+    </ol>
+
+    <h3 class="g-h3">💥 Mất dữ liệu</h3>
+    <p class="g-p">Menu ☰ → <b>Backup & Cloud</b> → <b>⬇️ Khôi phục từ Cloud</b> (nếu đã setup) hoặc <b>🔄 Phục hồi tự động</b>.</p>
+
+    <h3 class="g-h3">⚠️ Báo "Đã tồn tại bản ghi cùng số liệu"</h3>
+    <p class="g-p">Ngày đó đã nhập rồi. Muốn sửa → vào <b>Nhật ký</b> → bấm <b>Sửa</b>.</p>
+
+    <h3 class="g-h3">📷 Không thấy nút quét</h3>
+    <p class="g-p">Đóng app hoàn toàn → mở lại.</p>
+  </section>
+
+  <footer class="g-footer">
+    <div class="g-footer-text">
+      <b>SPX Tracker v1</b><br>
+      Made with ❤️ for SPX drivers
+    </div>
+    <a href="./index.html" class="g-footer-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="19" y1="12" x2="5" y2="12"/>
+        <polyline points="12 19 5 12 12 5"/>
+      </svg>
+      <span>Quay lại app</span>
+    </a>
+  </footer>
+
+</div>
+
+<div id="gLightbox" onclick="closeLightbox()">
+  <button class="g-lb-close" onclick="closeLightbox()" aria-label="Đóng">✕</button>
+  <img id="gLightboxImg" alt="Ảnh phóng to" onclick="event.stopPropagation()">
+</div>
+
+<script>
+(function() {
+  try {
+    const theme = localStorage.getItem('spx_theme') || 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+
+function openLightbox(src) {
+  const lb = document.getElementById('gLightbox');
+  const img = document.getElementById('gLightboxImg');
+  if (!lb || !img) return;
+  img.src = src;
+  lb.classList.add('active');
+}
+function closeLightbox() {
+  const lb = document.getElementById('gLightbox');
+  if (lb) lb.classList.remove('active');
+}
+</script>
+
+</body>
+</html>
