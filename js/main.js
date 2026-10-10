@@ -19,7 +19,8 @@ import {
   openShareTargetModal, closeShareTargetModal,
   openHistoryDatePicker, applyHistoryDateFilter, clearHistoryDateFilter,
   openAllOpportunitiesModal, closeAllOpportunitiesModal,
-  showToast
+  showToast,
+  isAutoSaveOCR, setAutoSaveOCR, toggleAutoSaveOCR, toggleAutoSaveOCRFromMenu
 } from './ui.js';
 import {
   handleOcrImage, preloadTesseractWorker,
@@ -434,6 +435,10 @@ async function _runShareTargetIfNeeded() {
 Object.assign(window, {
   toggleTheme,
   toggleThemeFromMenu,
+  isAutoSaveOCR,
+  setAutoSaveOCR,
+  toggleAutoSaveOCR,
+  toggleAutoSaveOCRFromMenu,
   switchMainTab, switchModalSubTab, setOverviewFilter, setHistFilter,
   setRankTier,
   syncRankUIForCurrentMonth,
