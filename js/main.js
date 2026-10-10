@@ -28,6 +28,7 @@ import {
   saveBatchAll, importBatchItem, removeBatchItem,
   backToBatch, hasBatchPending, showBackToBatchBtn,
   clearOcrCache, getOcrCacheStats,
+  initOcrCache, refreshOcrCacheStats,        // ⭐ PATCH #3
   handleSharedImage
 } from './ocr.js';
 import { saveRecord, deleteRecord, clearAllHistory } from './entry.js';
@@ -46,6 +47,8 @@ import {
 import { undoLast } from './undo.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { WEIGHT_KEYS } from './config.js';
+// ⭐ PATCH #2: SW bridge
+import { requestPrecacheTesseract } from './sw-bridge.js';
 
 // ================ AUTO-CLEAR INPUT ================
 function attachAutoClearInputs() {
@@ -132,8 +135,9 @@ async function _updateOcrCacheStats() {
   const el = document.getElementById('ocrCacheStats');
   if (!el) return;
   try {
-    const stats = await getOcrCacheStats();
-    el.innerText = `RAM: ${stats.ramEntries} · DB: ${stats.dbEntries} · ~${stats.sizeKB} KB (tối đa ${stats.maxEntries} mục)`;
+    // ⭐ PATCH #3: async refresh — đọc IDB rồi mới hiển thị
+    const stats = await refreshOcrCacheStats();
+    el.innerText = `RAM: ${stats.ramEntries} · IDB: ${stats.lsEntries} · ~${stats.sizeKB} KB (max ${stats.maxEntries}/${stats.maxSizeKB}KB)`;
   } catch (e) {
     el.innerText = 'Không đọc được thống kê';
   }
@@ -142,7 +146,7 @@ async function _updateOcrCacheStats() {
 async function _clearOcrCacheFromSettings() {
   try {
     await clearOcrCache();
-    _updateOcrCacheStats();
+    await _updateOcrCacheStats();
   } catch (e) {
     console.error('[OCR Cache] Lỗi xóa:', e);
     await showAlert('Không xóa được cache: ' + e.message, { title: 'Lỗi', okText: 'Đóng' });
@@ -182,18 +186,18 @@ function _showIncomeInfo() {
   );
 }
 
-// ================ v50.11.11: OPEN OCR PICKER (defer preload) ================
+// ================ OPEN OCR PICKER (defer preload) ================
 /**
  * Mở file picker để quét ảnh.
- * Preload Tesseract worker CHỈ KHI user thực sự bấm 📷 (không auto preload).
- * → Tiết kiệm ~2MB data cho user không dùng OCR.
+ * - Lazy-load Tesseract lib (~2MB) chỉ khi user bấm 📷
+ * - Yêu cầu SW precache Tesseract runtime → OCR offline lần sau
  */
 let _ocrPreloadTriggered = false;
 function _openOcrPicker() {
-  // Preload lần đầu (fire-and-forget)
   if (!_ocrPreloadTriggered) {
     _ocrPreloadTriggered = true;
-    preloadTesseractWorker();     // không await — để picker mở ngay
+    preloadTesseractWorker();       // không await — picker mở ngay
+    requestPrecacheTesseract();     // ⭐ PATCH #2: SW tải Tesseract vào cache
   }
 
   const input = document.getElementById('ocrFileInput');
@@ -225,7 +229,7 @@ async function registerSW() {
 
     navigator.serviceWorker.addEventListener('message', e => {
       if (e.data && e.data.type === 'SW_UPDATED') {
-        // Không tự reload khi đang mở form nhập → tránh mất số liệu đang gõ
+        // ⭐ PATCH #1: không tự reload khi modal đang mở
         if (document.querySelector('.modal-shade.active')) { showUpdateBanner(); return; }
         window.location.reload();
       }
@@ -235,10 +239,6 @@ async function registerSW() {
   }
 }
 
-/**
- * Kiểm tra version từ server.
- * @param {boolean} manual - true nếu user bấm menu
- */
 async function checkVersion(manual = false) {
   try {
     const res = await fetch(`./version.json?t=${Date.now()}`, { cache: 'no-store' });
@@ -316,13 +316,7 @@ async function applyUpdate() {
   }
 }
 
-// ================ v50.11.11: VISIBILITY-BASED CHECK ================
-/**
- * Fix #6: thay setInterval 5 phút bằng visibility-based check.
- * - Khi user quay lại app (visible) → check 1 lần.
- * - Không còn check ngầm khi app ẩn → tiết kiệm pin.
- * - Throttle: tối thiểu 5 phút giữa 2 lần check tự động.
- */
+// ================ VISIBILITY-BASED CHECK ================
 let _lastAutoCheckTime = 0;
 const AUTO_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 
@@ -424,6 +418,7 @@ async function _runShareTargetIfNeeded() {
   // Preload OCR worker vì chắc chắn sẽ dùng
   _ocrPreloadTriggered = true;
   preloadTesseractWorker();
+  requestPrecacheTesseract();      // ⭐ PATCH #2: SW cache Tesseract cho lần sau offline
 
   await new Promise(r => setTimeout(r, 400));
 
@@ -461,7 +456,7 @@ Object.assign(window, {
   syncRankUIForCurrentMonth,
 
   applyUpdate,
-  checkVersion: () => checkVersion(true),   // menu gọi → manual mode
+  checkVersion: () => checkVersion(true),
 
   setPeriodMode,
   periodPrev,
@@ -481,7 +476,6 @@ Object.assign(window, {
   closeShareTargetModal,
   handleSharedImage,
 
-  // v50.11.11: History date filter (thay 9 hàm filter cũ)
   openHistoryDatePicker,
   applyHistoryDateFilter,
   clearHistoryDateFilter,
@@ -490,7 +484,6 @@ Object.assign(window, {
   closeAllOpportunitiesModal,
   setAllOppFilter,
 
-  // v50.11.11: open OCR picker (defer Tesseract)
   openOcrPicker: _openOcrPicker,
 
   // REGION
@@ -571,14 +564,22 @@ Object.assign(window, {
   findDuplicates: _findDuplicates,
   cleanupDuplicates: _cleanupDuplicates,
 
-  toggleHeroMetrics: _toggleHeroMetrics
+  toggleHeroMetrics: _toggleHeroMetrics,
+
+  // ⭐ PATCH #2: SW bridge — debug từ console
+  isTesseractCached: () => import('./sw-bridge.js').then(m => m.isTesseractCached()),
+  clearTesseractCache: () => import('./sw-bridge.js').then(m => m.clearTesseractCache()),
+
+  // ⭐ PATCH #3: OCR cache debug
+  debugListOcrCache: () => import('./ocr-cache.js').then(m => m.debugListCache())
 });
 
 // ================ HOOK SETTINGS MODAL → UPDATE STATS ================
 const _origOpenSettingsModal = openSettingsModal;
 window.openSettingsModal = function() {
   _origOpenSettingsModal();
-  setTimeout(_updateOcrCacheStats, 100);
+  // Async — không cần await, để modal mở trước rồi stats về sau
+  setTimeout(() => { _updateOcrCacheStats(); }, 100);
 };
 
 // ================ CẢNH BÁO KHI KHÔNG GHI ĐƯỢC DỮ LIỆU ================
@@ -603,12 +604,15 @@ window.addEventListener('spx:storage-error', () => {
 
   attachAutoClearInputs();
   updateAllViews();
-  // v50.11.11: KHÔNG auto preload Tesseract — chỉ preload khi user bấm 📷
+
+  // ⭐ PATCH #3: khởi tạo IDB cache (migration từ localStorage cũ)
+  initOcrCache().catch(e => console.warn('[Init] OCR cache init fail:', e));
+
+  // KHÔNG auto preload Tesseract — chỉ preload khi user bấm 📷
 
   registerSW();
   setTimeout(() => checkVersion(false), 2000);
 
-  // v50.11.11: visibility-based check (thay setInterval)
   document.addEventListener('visibilitychange', _maybeAutoCheck);
   window.addEventListener('focus', _maybeAutoCheck);
 

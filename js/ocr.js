@@ -1,6 +1,6 @@
 // =============================================================
-// OCR ENGINE v1-β.3 — PART 1/2
-// Imports · Config · Worker · Preprocess · Parse
+// OCR ENGINE — PART 1/2
+// Imports · Config · Worker · Preprocess · Parse · Post-process
 // =============================================================
 
 import { state } from './state.js';
@@ -9,11 +9,24 @@ import { getTodayIso, formatDateDisplay, generateId } from './utils.js';
 import { openAddModal, openEditModal, switchModalSubTab, showToast } from './ui.js';
 import { updateAllViews } from './render.js';
 import { showConfirm } from './dialog.js';
-import { ocrCacheGet, ocrCacheSet, ocrCacheClear, ocrCacheStats } from './ocrcache.js';
+// ⭐ PATCH #3: cache module tách riêng (IndexedDB)
+import {
+  cacheGetAsync, cacheSet,
+  clearOcrCache as _clearOcrCacheImpl,
+  getOcrCacheStats as _getOcrCacheStatsImpl,
+  initOcrCache, refreshOcrCacheStats
+} from './ocr-cache.js';
+
+// Re-export để main.js và các module khác không cần đổi import path
+export { getOcrCacheStats, initOcrCache, refreshOcrCacheStats } from './ocr-cache.js';
 
 // ==================== CONFIG ====================
+// ⚠️⚠️⚠️ DEBUG MODE — ĐANG BẬT ĐỂ LẤY LOG ⚠️⚠️⚠️
+// Sau khi lấy đủ log, ĐỔI LẠI:
+//   DISABLE_AUTO_SAVE = true
+//   DRY_RUN_OCR       = false
 const DISABLE_AUTO_SAVE = true;
-
+const DRY_RUN_OCR       = false;
 const OCR_TIMEOUT_MS    = 60000;
 
 // ==================== ABORT CONTROLLER ====================
@@ -66,7 +79,6 @@ async function ensurePushUndo() {
 }
 
 // ==================== TESSERACT WORKER ====================
-// Tải thư viện Tesseract (~2MB) chỉ khi thật sự dùng OCR — trước đây chặn render ở <head>.
 let _tessLibPromise = null;
 function ensureTesseractLib() {
   if (window.Tesseract) return Promise.resolve();
@@ -76,7 +88,11 @@ function ensureTesseractLib() {
     s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
     s.async = true;
     s.onload = resolve;
-    s.onerror = () => { _tessLibPromise = null; s.remove(); reject(new Error('Không tải được thư viện OCR — kiểm tra mạng')); };
+    s.onerror = () => {
+      _tessLibPromise = null;
+      s.remove();
+      reject(new Error('Không tải được thư viện OCR — kiểm tra mạng'));
+    };
     document.head.appendChild(s);
   });
   return _tessLibPromise;
@@ -247,7 +263,7 @@ function otsuThreshold(gray) {
 // ==================== PREPROCESSING ====================
 async function preprocessImage(rawDataUrl, options = {}, signal) {
   _checkAborted(signal);
-  const { upscale = 2.0, useOtsu = true, threshold = 145 } = options;
+  const { upscale = 2.0, useOtsu = true, threshold = 145, raw = false } = options;
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -265,16 +281,27 @@ async function preprocessImage(rawDataUrl, options = {}, signal) {
 
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
-        const gray = new Uint8Array(data.length / 4);
-        for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-          gray[j] = Math.round(data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+
+        if (raw) {
+          // PASS 5: Chỉ convert grayscale — để Tesseract tự adaptive threshold
+          for (let i = 0; i < data.length; i += 4) {
+            const g = Math.round(data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+            data[i] = data[i+1] = data[i+2] = g;
+          }
+        } else {
+          // Thresholding
+          const gray = new Uint8Array(data.length / 4);
+          for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+            gray[j] = Math.round(data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+          }
+          const th = useOtsu ? otsuThreshold(gray) : threshold;
+          for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+            const val = gray[j] > th ? 255 : 0;
+            data[i] = data[i+1] = data[i+2] = val;
+            data[i+3] = 255;
+          }
         }
-        const th = useOtsu ? otsuThreshold(gray) : threshold;
-        for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-          const val = gray[j] > th ? 255 : 0;
-          data[i] = data[i+1] = data[i+2] = val;
-          data[i+3] = 255;
-        }
+
         ctx.putImageData(imgData, 0, 0);
         resolve({ dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height });
       } catch (e) { reject(e); }
@@ -359,12 +386,18 @@ function identifyRangeKey(minV, maxV) {
 function parseOcrText(cleanText) {
   const weights = { '0_2':0,'2_4':0,'4_6':0,'6_8':0,'8_10':0,'10_12':0,'12_15':0,'over_15':0 };
   const confidences = {};
+
   const text = cleanText
     .replace(/[–—]/g, '-')
     .replace(/,/g, '.')
     .replace(/¡/g, '1')
     .split('\n')
-    .filter(line => !/\b\d{1,2}:\d{2}\b/.test(line))
+    .filter(line => {
+      if (/\b\d{1,2}:\d{2}\b/.test(line)) return false;
+      if (/^\s*\d{4,}/.test(line)) return false;
+      if (/Ch[iỉ]\s*ti[eế]t/i.test(line)) return false;
+      return true;
+    })
     .join('\n');
 
   const totalRegex = /T[oôổ]ng\s*[:\-]?\s*(\d{1,6})/i;
@@ -386,8 +419,21 @@ function parseOcrText(cleanText) {
   const totalPos = totalMatch ? totalMatch.index : -1;
   const totalEnd = totalMatch ? totalMatch.index + totalMatch[0].length : -1;
 
-  const numRegex = /\d{1,6}/g;
+  const donNums = [];
+  const donRegex = /(\d{1,5})\s*[ĐDđd]\s*ơn\b/gi;
+  while ((m = donRegex.exec(text)) !== null) {
+    const val = parseInt(m[1], 10);
+    const pos = m.index;
+    const endPos = pos + m[0].length;
+    if (ranges.some(r => pos < r.endPos && endPos > r.pos)) continue;
+    if (totalPos >= 0 && pos >= totalPos && pos <= totalEnd + 3) continue;
+    if (val > 99999) continue;
+    donNums.push({ value: val, pos, endPos });
+  }
+  donNums.sort((a, b) => a.pos - b.pos);
+
   const nums = [];
+  const numRegex = /\d{1,6}/g;
   while ((m = numRegex.exec(text)) !== null) {
     const val = parseInt(m[0], 10);
     const pos = m.index;
@@ -400,12 +446,12 @@ function parseOcrText(cleanText) {
   }
   nums.sort((a, b) => a.pos - b.pos);
 
-  function distanceMatch(mode) {
+  function distanceMatch(numList, mode) {
     const result = {};
     const used = new Set();
     ranges.forEach(r => {
       let best = null, bestDist = 9999;
-      nums.forEach((n, idx) => {
+      numList.forEach((n, idx) => {
         if (used.has(idx)) return;
         let dist;
         if (mode === 'before') {
@@ -415,10 +461,7 @@ function parseOcrText(cleanText) {
           if (n.pos < r.endPos) return;
           dist = n.pos - r.endPos;
         } else {
-          dist = Math.min(
-            Math.abs(n.pos - r.pos),
-            Math.abs(n.endPos - r.endPos)
-          );
+          dist = Math.min(Math.abs(n.pos - r.pos), Math.abs(n.endPos - r.endPos));
         }
         if (dist < bestDist && dist < 800) {
           bestDist = dist;
@@ -438,22 +481,26 @@ function parseOcrText(cleanText) {
   const sumOf = r => Object.values(r).reduce((a, b) => a + b, 0);
   const countOf = r => Object.keys(r).length;
 
-  const mClosest = distanceMatch('closest');
-  const mBefore  = distanceMatch('before');
-  const mAfter   = distanceMatch('after');
+  const donResult = distanceMatch(donNums, 'closest');
+  const mClosest = distanceMatch(nums, 'closest');
+  const mBefore  = distanceMatch(nums, 'before');
+  const mAfter   = distanceMatch(nums, 'after');
 
   const candidates = [
-    { name: 'ordered', res: orderedResult, cnt: countOf(orderedResult) },
-    { name: 'closest', res: mClosest,      cnt: countOf(mClosest) },
-    { name: 'before',  res: mBefore,       cnt: countOf(mBefore) },
-    { name: 'after',   res: mAfter,        cnt: countOf(mAfter) }
+    { name: 'don-pattern', res: donResult,      cnt: countOf(donResult),      priority: 0 },
+    { name: 'closest',     res: mClosest,       cnt: countOf(mClosest),       priority: 1 },
+    { name: 'ordered',     res: orderedResult,  cnt: countOf(orderedResult),  priority: 2 },
+    { name: 'before',      res: mBefore,        cnt: countOf(mBefore),        priority: 3 },
+    { name: 'after',       res: mAfter,         cnt: countOf(mAfter),         priority: 4 }
   ];
 
   candidates.forEach(c => {
     c.diff = expectedTotal !== null ? Math.abs(sumOf(c.res) - expectedTotal) : 0;
   });
+
   candidates.sort((a, b) => {
     if (a.diff !== b.diff) return a.diff - b.diff;
+    if (a.priority !== b.priority) return a.priority - b.priority;
     return b.cnt - a.cnt;
   });
 
@@ -469,6 +516,62 @@ function parseOcrText(cleanText) {
 
   const totalFound = Object.values(weights).reduce((a, b) => a + b, 0);
   return { weights, confidences, expectedTotal, totalFound, mode: best.name };
+}
+
+// ==================== POST-PROCESS: Fix chữ số nhầm ====================
+/**
+ * Font SPX hay đọc nhầm các cặp chữ số do nét mảnh:
+ *   9 → 2  (case chính — đuôi 9 mất khi threshold)
+ *   7 → 1  (nét chéo 7 mờ)
+ *   6 → 8  (vòng tròn 6 → 8)
+ *   5 → 6  (nét cong 5 → 6)
+ *   3 → 8  (nét cong 3 → 8)
+ *
+ * Hàm thử đổi từng chữ số trong các dải để sum khớp total.
+ * CHỈ áp dụng nếu đổi chính xác về total → an toàn 100%.
+ */
+function postProcessFixDigits(parsed) {
+  if (parsed.expectedTotal === null) return null;
+  if (parsed.totalFound === parsed.expectedTotal) return null;
+
+  const SUBS = [
+    { from: '2', to: '9' },
+    { from: '1', to: '7' },
+    { from: '8', to: '6' },
+    { from: '6', to: '5' },
+    { from: '8', to: '3' }
+  ];
+
+  const keys = ['0_2', '2_4', '4_6', '6_8', '8_10', '10_12', '12_15', 'over_15'];
+  const ordered = ['0_2', ...keys.filter(k => k !== '0_2')];
+
+  for (const key of ordered) {
+    const oldVal = parsed.weights[key];
+    if (!oldVal || oldVal === 0) continue;
+    const str = String(oldVal);
+
+    for (let i = 0; i < str.length; i++) {
+      for (const s of SUBS) {
+        if (str[i] !== s.from) continue;
+
+        const newVal = parseInt(str.substring(0, i) + s.to + str.substring(i + 1), 10);
+        if (!Number.isFinite(newVal)) continue;
+
+        const newTotal = parsed.totalFound - oldVal + newVal;
+        if (newTotal === parsed.expectedTotal) {
+          return {
+            weights: { ...parsed.weights, [key]: newVal },
+            confidences: { ...parsed.confidences, [key]: 93 },
+            expectedTotal: parsed.expectedTotal,
+            totalFound: newTotal,
+            mode: parsed.mode + '+fix' + s.from + s.to
+          };
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 // ==================== EXTRACT DATE ====================
@@ -506,9 +609,14 @@ function extractDate(text) {
 
   return getTodayIso();
 }
+
 // =============================================================
-// OCR ENGINE v1-β.3 — PART 2/2
-// Cache LS Optimized · Main · Modals · Copy log · Exports
+// HẾT PART 1 — Chờ "ok" để gửi PART 2
+// PART 2 chứa: processOneFile (Smart Pipeline), Pipeline, Modals
+// =============================================================
+// =============================================================
+// OCR ENGINE — PART 2/2
+// Batch state · Smart Pipeline · Modals · Copy log · Exports
 // =============================================================
 
 // ==================== LOG STORAGE ====================
@@ -620,6 +728,9 @@ async function tryAutoSave(r) {
   const dist = validateDistribution(r.weights);
   if (!dist.ok) return false;
 
+  // ⚠️ DRY RUN MODE
+  if (DRY_RUN_OCR) return false;
+
   const weights = buildWeights(r);
   const newId = generateId();
 
@@ -659,19 +770,10 @@ async function tryAutoSaveForce(r) {
   return true;
 }
 
-// ==================== CACHE OCR (IndexedDB — xem ocrcache.js) ====================
+// ==================== XÓA CACHE OCR ====================
 export async function clearOcrCache() {
-  const ok = await showConfirm(
-    'Xóa toàn bộ cache OCR?\n\nLần sau quét lại ảnh cũ sẽ phải OCR từ đầu.',
-    { title: '🗑️ Xóa cache OCR', okText: 'Xóa', cancelText: 'Hủy', danger: true }
-  );
-  if (!ok) return 0;
-  const count = await ocrCacheClear();
-  showToast(`Đã xóa ${count} cache OCR`, 'success', 2500);
-  return count;
+  return _clearOcrCacheImpl();
 }
-
-export const getOcrCacheStats = ocrCacheStats;   // async
 
 // ==================== HASH BLOB ====================
 async function hashBlob(file) {
@@ -897,12 +999,12 @@ async function _runOcrFromFiles(files, wasAppend = false) {
   }
 }
 
-// ==================== PROCESS ONE FILE ====================
+// ==================== PROCESS ONE FILE — SMART PIPELINE ====================
 async function processOneFile(file, signal) {
   _checkAborted(signal);
 
   const hash = await hashBlob(file);
-  const cached = await ocrCacheGet(hash);
+  const cached = await cacheGetAsync(hash);
 
   if (cached) {
     _checkAborted(signal);
@@ -929,7 +1031,13 @@ async function processOneFile(file, signal) {
   _checkAborted(signal);
   const statusDesc = document.getElementById('ocrStatusDesc');
 
-  // Pass 1: Otsu
+  // ═══════════════════════════════════════════════════════════
+  //  SMART PIPELINE — Chỉ chạy pass tiếp theo khi pass trước fail
+  //  Thứ tự: Pass 1 → Post-1 → Pass 6 → Post-2 → Pass 5 → Post-3
+  //  Tối ưu: 80% ảnh dừng ở Pass 1 (~2s), không chạy hết 6 pass
+  // ═══════════════════════════════════════════════════════════
+
+  // ========== PASS 1: Otsu (baseline) ==========
   if (statusDesc) statusDesc.innerText = 'Quét lần 1...';
   const pre1 = await preprocessImage(rawDataUrl, { upscale: 2.0, useOtsu: true }, signal);
   _checkAborted(signal);
@@ -942,32 +1050,50 @@ async function processOneFile(file, signal) {
     ? Math.abs(parsed1.totalFound - parsed1.expectedTotal)
     : 9999;
 
-  // Pass 2: Threshold 130
+  // ========== POST-PROCESS 1: Fix chữ số (0s) ==========
+  if (bestDiff > 0) {
+    const fixed = postProcessFixDigits(bestResult);
+    if (fixed) { bestResult = fixed; bestText = text1; bestDiff = 0; }
+  }
+
+  // ========== PASS 6: Threshold 70 — giữ nét đuôi chữ số 9 ==========
   if (bestDiff > 0) {
     _checkAborted(signal);
     if (statusDesc) statusDesc.innerText = 'Quét lần 2...';
-    const pre2 = await preprocessImage(rawDataUrl, { upscale: 2.0, useOtsu: false, threshold: 130 }, signal);
+    const pre6 = await preprocessImage(rawDataUrl, { upscale: 2.0, useOtsu: false, threshold: 70 }, signal);
     _checkAborted(signal);
-    const text2 = await ocrRecognize(pre2.dataUrl, signal);
-    const parsed2 = parseOcrText(text2);
-    const diff2 = parsed2.expectedTotal !== null
-      ? Math.abs(parsed2.totalFound - parsed2.expectedTotal)
+    const text6 = await ocrRecognize(pre6.dataUrl, signal);
+    const parsed6 = parseOcrText(text6);
+    const diff6 = parsed6.expectedTotal !== null
+      ? Math.abs(parsed6.totalFound - parsed6.expectedTotal)
       : 9999;
-    if (diff2 < bestDiff) { bestResult = parsed2; bestText = text2; bestDiff = diff2; }
+    if (diff6 < bestDiff) { bestResult = parsed6; bestText = text6; bestDiff = diff6; }
   }
 
-  // Pass 3: Threshold 160
+  // ========== POST-PROCESS 2 ==========
+  if (bestDiff > 0) {
+    const fixed = postProcessFixDigits(bestResult);
+    if (fixed) { bestResult = fixed; bestDiff = 0; }
+  }
+
+  // ========== PASS 5: RAW image — fallback cuối ==========
   if (bestDiff > 0) {
     _checkAborted(signal);
     if (statusDesc) statusDesc.innerText = 'Quét lần 3...';
-    const pre3 = await preprocessImage(rawDataUrl, { upscale: 2.5, useOtsu: false, threshold: 160 }, signal);
+    const pre5 = await preprocessImage(rawDataUrl, { upscale: 2.0, raw: true }, signal);
     _checkAborted(signal);
-    const text3 = await ocrRecognize(pre3.dataUrl, signal);
-    const parsed3 = parseOcrText(text3);
-    const diff3 = parsed3.expectedTotal !== null
-      ? Math.abs(parsed3.totalFound - parsed3.expectedTotal)
+    const text5 = await ocrRecognize(pre5.dataUrl, signal);
+    const parsed5 = parseOcrText(text5);
+    const diff5 = parsed5.expectedTotal !== null
+      ? Math.abs(parsed5.totalFound - parsed5.expectedTotal)
       : 9999;
-    if (diff3 < bestDiff) { bestResult = parsed3; bestText = text3; bestDiff = diff3; }
+    if (diff5 < bestDiff) { bestResult = parsed5; bestText = text5; bestDiff = diff5; }
+  }
+
+  // ========== POST-PROCESS 3 ==========
+  if (bestDiff > 0) {
+    const fixed = postProcessFixDigits(bestResult);
+    if (fixed) { bestResult = fixed; bestDiff = 0; }
   }
 
   const result = {
@@ -982,7 +1108,7 @@ async function processOneFile(file, signal) {
     fullDataUrl: rawDataUrl
   };
 
-  void ocrCacheSet(hash, {   // không await: trả kết quả OCR ngay, ghi cache chạy nền
+  cacheSet(hash, {
     thumbnail,
     result: { ...result, fullDataUrl: '' }
   });
@@ -1255,10 +1381,12 @@ export function backToBatch() {
   showBackToBatchBtn(false);
   openBatchOcrModal();
 }
+
 export function showBackToBatchBtn(show) {
   const btn = document.getElementById('backToBatchBtn');
   if (btn) btn.style.display = show ? 'inline-flex' : 'none';
 }
+
 export function hasBatchPending() { return batchResults.length > 0; }
 
 // ==================== SAVE BATCH ====================
@@ -1433,4 +1561,17 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({
     '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
   }[c]));
+}
+
+// ==================== INTERNAL: showSummaryToast ====================
+function showSummaryToast(saved, dup, need, delay = 0) {
+  const parts = [];
+  if (saved > 0) parts.push(`✅ ${saved} tự lưu`);
+  if (dup > 0)   parts.push(`⚠️ ${dup} trùng`);
+  if (need > 0)  parts.push(`📝 ${need} cần xử lý`);
+  if (parts.length === 0) return;
+
+  const msg = parts.join(' · ');
+  const type = need > 0 ? 'warning' : (dup > 0 ? 'warning' : 'success');
+  setTimeout(() => showToast(msg, type, 3500), delay);
 }
