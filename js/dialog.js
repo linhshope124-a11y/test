@@ -55,7 +55,7 @@ export function showConfirm(message, options = {}) {
 /**
  * Mở dialog nội bộ
  *
- * v50.11.5: Nếu đang có dialog mở → BLOCK dialog mới (không đóng dialog cũ).
+ * Nếu đang có dialog mở → BLOCK dialog mới (không đóng dialog cũ).
  * Dialog mới tự resolve với giá trị mặc định:
  *   - confirm → false (coi như user Cancel)
  *   - alert   → undefined

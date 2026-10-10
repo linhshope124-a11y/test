@@ -40,7 +40,7 @@ function buildPayload() {
   };
 }
 
-// ==================== v50.11.5: TOKEN WARNING ====================
+// ==================== TOKEN WARNING ====================
 /**
  * Cảnh báo user token lưu dạng plaintext lần đầu.
  * Chỉ hiện 1 lần duy nhất (đã ack thì thôi).

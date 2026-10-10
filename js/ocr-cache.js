@@ -9,9 +9,9 @@ import { showConfirm } from './dialog.js';
 import { showToast } from './ui.js';
 
 // ==================== CONFIG ====================
-const OCR_CACHE_VERSION = 'v2-idb';     // ⚠️ đổi version → cache cũ không match
+const OCR_CACHE_VERSION = 'v1';          // ⚠️ đổi khi parser/pipeline đổi → bỏ kết quả OCR cũ (key khác → không match)
 const DB_NAME = 'spx_ocr_cache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;   // 2: bản v1 từng tạo store 'results' cùng tên DB → store 'entries' không tồn tại, cache hỏng im lặng
 const STORE_NAME = 'entries';
 const MEM_MAX = 20;         // entries giữ trong RAM
 const DB_MAX = 200;         // entries giữ trong IDB
@@ -29,6 +29,7 @@ function openDB() {
   if (_dbPromise) return _dbPromise;
 
   _dbPromise = new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') { _dbPromise = null; return reject(new Error('IndexedDB không khả dụng')); }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
 
     req.onupgradeneeded = e => {
@@ -37,6 +38,8 @@ function openDB() {
         const store = db.createObjectStore(STORE_NAME, { keyPath: 'key' });
         store.createIndex('by_ts', 'ts', { unique: false });
       }
+      // Dọn store của bản cache cũ (nếu máy từng chạy bản đó)
+      if (db.objectStoreNames.contains('results')) db.deleteObjectStore('results');
     };
 
     req.onsuccess = () => {
@@ -47,8 +50,10 @@ function openDB() {
 
     req.onerror = () => {
       console.warn('[OcrCache] Không mở được IndexedDB:', req.error);
+      _dbPromise = null;           // cho phép thử mở lại lần sau (trước đây lỗi 1 lần là hỏng cả phiên)
       reject(req.error);
     };
+    req.onblocked = () => { _dbPromise = null; reject(new Error('IndexedDB bị chặn bởi tab khác')); };
   });
 
   return _dbPromise;
@@ -112,8 +117,11 @@ export async function cacheGetAsync(hash) {
 
     if (!entry) return null;
 
-    // Promote L1
+    // Promote L1 + cập nhật ts để eviction theo LRU (không chờ)
     _memSet(key, entry.value);
+    openDB().then(d => {
+      d.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put({ ...entry, ts: Date.now() });
+    }).catch(() => {});
     return entry.value;
   } catch (e) {
     console.warn('[OcrCache] cacheGetAsync lỗi:', e);
@@ -142,7 +150,8 @@ async function _dbSet(key, value) {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       tx.objectStore(STORE_NAME).put({ key, value, ts: Date.now() });
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = e => reject((e && e.target && e.target.error) || tx.error || new Error('IDB lỗi'));
+      tx.onabort = () => reject(tx.error || new Error('IDB abort'));
     });
 
     // Evict nếu vượt DB_MAX
@@ -156,7 +165,8 @@ async function _dbSet(key, value) {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         tx.objectStore(STORE_NAME).put({ key, value, ts: Date.now() });
         tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
+        tx.onerror = e => reject((e && e.target && e.target.error) || tx.error || new Error('IDB lỗi'));
+      tx.onabort = () => reject(tx.error || new Error('IDB abort'));
       });
     } else {
       throw e;
@@ -199,7 +209,8 @@ async function _evictOldest(n) {
     };
 
     tx.oncomplete = () => resolve(removed);
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = e => reject((e && e.target && e.target.error) || tx.error || new Error('IDB lỗi'));
+      tx.onabort = () => reject(tx.error || new Error('IDB abort'));
   });
 }
 
@@ -232,6 +243,7 @@ export async function clearOcrCache() {
       store.clear();
       tx.oncomplete = () => resolve(c);
       tx.onerror = () => resolve(0);
+      tx.onabort = () => resolve(0);
     });
   } catch (e) {
     console.warn('[OcrCache] clear L2 fail:', e);

@@ -8,7 +8,7 @@ import { WEIGHT_KEYS } from './config.js';
 import { getTodayIso, formatDateDisplay, generateId } from './utils.js';
 import { openAddModal, openEditModal, switchModalSubTab, showToast } from './ui.js';
 import { updateAllViews } from './render.js';
-import { showConfirm } from './dialog.js';
+import { showConfirm, showAlert } from './dialog.js';
 // ⭐ PATCH #3: cache module tách riêng (IndexedDB)
 import {
   cacheGetAsync, cacheSet,
@@ -426,7 +426,7 @@ function parseOcrText(cleanText) {
     const pos = m.index;
     const endPos = pos + m[0].length;
     if (ranges.some(r => pos < r.endPos && endPos > r.pos)) continue;
-    if (totalPos >= 0 && pos >= totalPos && pos <= totalEnd + 3) continue;
+    if (totalPos >= 0 && pos < totalEnd && endPos > totalPos) continue;   // chỉ loại khi đè lên chính chữ "Tổng: N"
     if (val > 99999) continue;
     donNums.push({ value: val, pos, endPos });
   }
@@ -482,16 +482,23 @@ function parseOcrText(cleanText) {
   const countOf = r => Object.keys(r).length;
 
   const donResult = distanceMatch(donNums, 'closest');
+  // Mỗi dải có đúng 1 "N Đơn" cùng thứ tự → ghép theo thứ tự (đúng dù số nằm trước hay sau dải;
+  // 'closest' có thể gán nhầm mà tổng vẫn khớp → báo tin cậy 95% cho kết quả sai)
+  const donOrdered = {};
+  if (donNums.length === ranges.length) {
+    ranges.forEach((r, i) => { donOrdered[r.key] = donNums[i].value; });
+  }
   const mClosest = distanceMatch(nums, 'closest');
   const mBefore  = distanceMatch(nums, 'before');
   const mAfter   = distanceMatch(nums, 'after');
 
   const candidates = [
-    { name: 'don-pattern', res: donResult,      cnt: countOf(donResult),      priority: 0 },
-    { name: 'closest',     res: mClosest,       cnt: countOf(mClosest),       priority: 1 },
-    { name: 'ordered',     res: orderedResult,  cnt: countOf(orderedResult),  priority: 2 },
-    { name: 'before',      res: mBefore,        cnt: countOf(mBefore),        priority: 3 },
-    { name: 'after',       res: mAfter,         cnt: countOf(mAfter),         priority: 4 }
+    { name: 'don-ordered', res: donOrdered,    cnt: countOf(donOrdered),    priority: 0 },
+    { name: 'don-pattern', res: donResult,     cnt: countOf(donResult),     priority: 1 },
+    { name: 'closest',     res: mClosest,      cnt: countOf(mClosest),      priority: 2 },
+    { name: 'ordered',     res: orderedResult, cnt: countOf(orderedResult), priority: 3 },
+    { name: 'before',      res: mBefore,       cnt: countOf(mBefore),       priority: 4 },
+    { name: 'after',       res: mAfter,        cnt: countOf(mAfter),        priority: 5 }
   ];
 
   candidates.forEach(c => {
@@ -500,6 +507,8 @@ function parseOcrText(cleanText) {
 
   candidates.sort((a, b) => {
     if (a.diff !== b.diff) return a.diff - b.diff;
+    // Không đọc được "Tổng" thì diff vô nghĩa → ưu tiên cách khớp được nhiều dải nhất
+    if (expectedTotal === null && a.cnt !== b.cnt) return b.cnt - a.cnt;
     if (a.priority !== b.priority) return a.priority - b.priority;
     return b.cnt - a.cnt;
   });
@@ -528,7 +537,8 @@ function parseOcrText(cleanText) {
  *   3 → 8  (nét cong 3 → 8)
  *
  * Hàm thử đổi từng chữ số trong các dải để sum khớp total.
- * CHỈ áp dụng nếu đổi chính xác về total → an toàn 100%.
+ * ⚠️ ĐÂY LÀ ĐOÁN, không phải chắc chắn: nhiều cách đổi có thể cùng khớp tổng do trùng hợp.
+ * Vì vậy ô bị đổi chỉ có độ tin cậy thấp (hiện đỏ) và KHÔNG BAO GIỜ được tự lưu — người dùng phải đối chiếu ảnh.
  */
 function postProcessFixDigits(parsed) {
   if (parsed.expectedTotal === null) return null;
@@ -561,7 +571,7 @@ function postProcessFixDigits(parsed) {
         if (newTotal === parsed.expectedTotal) {
           return {
             weights: { ...parsed.weights, [key]: newVal },
-            confidences: { ...parsed.confidences, [key]: 93 },
+            confidences: { ...parsed.confidences, [key]: 60 },   // <70 → ô đỏ: cần đối chiếu ảnh
             expectedTotal: parsed.expectedTotal,
             totalFound: newTotal,
             mode: parsed.mode + '+fix' + s.from + s.to
@@ -610,10 +620,6 @@ function extractDate(text) {
   return getTodayIso();
 }
 
-// =============================================================
-// HẾT PART 1 — Chờ "ok" để gửi PART 2
-// PART 2 chứa: processOneFile (Smart Pipeline), Pipeline, Modals
-// =============================================================
 // =============================================================
 // OCR ENGINE — PART 2/2
 // Batch state · Smart Pipeline · Modals · Copy log · Exports
@@ -713,6 +719,7 @@ function validateDistribution(weights) {
 // ==================== AUTO-SAVE ====================
 async function tryAutoSave(r) {
   if (DISABLE_AUTO_SAVE) return false;
+  if (String(r.mode || '').includes('+fix')) return false;   // kết quả đoán chữ số → luôn để người dùng xác nhận
 
   const type = getTypeFromResult(r);
   if (!type) return false;
@@ -1050,12 +1057,6 @@ async function processOneFile(file, signal) {
     ? Math.abs(parsed1.totalFound - parsed1.expectedTotal)
     : 9999;
 
-  // ========== POST-PROCESS 1: Fix chữ số (0s) ==========
-  if (bestDiff > 0) {
-    const fixed = postProcessFixDigits(bestResult);
-    if (fixed) { bestResult = fixed; bestText = text1; bestDiff = 0; }
-  }
-
   // ========== PASS 6: Threshold 70 — giữ nét đuôi chữ số 9 ==========
   if (bestDiff > 0) {
     _checkAborted(signal);
@@ -1068,12 +1069,6 @@ async function processOneFile(file, signal) {
       ? Math.abs(parsed6.totalFound - parsed6.expectedTotal)
       : 9999;
     if (diff6 < bestDiff) { bestResult = parsed6; bestText = text6; bestDiff = diff6; }
-  }
-
-  // ========== POST-PROCESS 2 ==========
-  if (bestDiff > 0) {
-    const fixed = postProcessFixDigits(bestResult);
-    if (fixed) { bestResult = fixed; bestDiff = 0; }
   }
 
   // ========== PASS 5: RAW image — fallback cuối ==========
@@ -1090,7 +1085,7 @@ async function processOneFile(file, signal) {
     if (diff5 < bestDiff) { bestResult = parsed5; bestText = text5; bestDiff = diff5; }
   }
 
-  // ========== POST-PROCESS 3 ==========
+  // ========== ĐOÁN CHỮ SỐ — chỉ sau khi MỌI lần quét thật đều lệch ==========
   if (bestDiff > 0) {
     const fixed = postProcessFixDigits(bestResult);
     if (fixed) { bestResult = fixed; bestDiff = 0; }
@@ -1263,7 +1258,7 @@ export function openCompareModal(batchItem, existingRecord) {
     msg += `📁 Dữ liệu ĐÃ LƯU được hiển thị trong ô nhập.\n`;
     msg += `📷 Ảnh OCR được hiển thị bên dưới.\n\n`;
     msg += cmp.text;
-    alert(msg);
+    showAlert(msg, { title: 'So sánh dữ liệu', okText: 'Đóng' });
   }, 200);
 }
 

@@ -15,11 +15,11 @@ const _flushNow = () => { persistData(); };
 window.addEventListener('pagehide', _flushNow);
 document.addEventListener('visibilitychange', () => { if (document.hidden) _flushNow(); });
 
-// ============ v50.11.11: All opportunities modal state ============
+// ============ All opportunities modal state ============
 let _allOppFilter = 'del';
 let _allOppCache = [];
 
-// ============ v50.11.11: History filters (đơn giản hóa) ============
+// ============ History filters (đơn giản hóa) ============
 // Chỉ còn: { date, types }
 // - date: 'YYYY-MM-DD' hoặc null (null = theo tháng đang xem)
 // - types: { delivery, pickup, return }

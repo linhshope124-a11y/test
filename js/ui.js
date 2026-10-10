@@ -72,7 +72,7 @@ export function switchModalSubTab(tabKey) {
  * Giữ function này để tránh vỡ import từ main.js.
  */
 export function setOverviewFilter(filter, el) {
-  console.warn('[ui] setOverviewFilter không còn dùng (v50.11.8)');
+  console.warn('[ui] setOverviewFilter không còn dùng');
 }
 
 // ================ ALL OPPORTUNITIES MODAL ================
@@ -125,7 +125,7 @@ export function setHistFilter(filter, btn) {
   renderHistory();
 }
 
-// ================ HISTORY FILTER — nút Ngày (v50.11.11) ================
+// ================ HISTORY FILTER — nút Ngày ================
 /**
  * Mở date picker native → user chọn 1 ngày
  */

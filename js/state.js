@@ -4,11 +4,11 @@ import { generateId, getCurrentMonthIso, getTodayIso, isValidIsoDate } from './u
 export const state = {
   appData: { delivery: [], pickup: [], return: [] },
 
-  // v50.4: Lương theo tháng
+  // Lương theo tháng
   salaryByMonth: {},
   salaryDays: 26,
 
-  // v50.8.0: Hạng thưởng theo tháng
+  // Hạng thưởng theo tháng
   rankByMonth: {},
 
   region: 'mien',
@@ -33,7 +33,7 @@ const RANK_BY_MONTH_KEY   = 'spx_rank_by_month';
 const LEGACY_RANK_KEY     = 'spx_rank_bonus';
 const LEGACY_RANK_NAME_KEY= 'spx_rank_name';
 
-// ============ v50.8.2: SAFE PARSE ============
+// ============ SAFE PARSE ============
 /**
  * Parse localStorage an toàn — không crash khi data hỏng.
  * @param {string} key - tên key trong localStorage
@@ -79,7 +79,7 @@ function safeParseString(key, fallback = '') {
 }
 // ============ /SAFE PARSE ============
 
-// ============ v50.11.5: SANITIZE WEIGHTS ============
+// ============ SANITIZE WEIGHTS ============
 /**
  * Chuẩn hóa object weights — đảm bảo có đủ 8 key, đều là số nguyên ≥ 0.
  * Tránh crash khi import file backup cũ thiếu key / sai type.
@@ -112,7 +112,7 @@ export function sanitizeRecords(arr) {
   return out;
 }
 
-// ============ v50.4: SALARY BY MONTH ============
+// ============ SALARY BY MONTH ============
 export function persistSalaryByMonth() {
   try {
     localStorage.setItem(SALARY_BY_MONTH_KEY, JSON.stringify(state.salaryByMonth));
@@ -178,7 +178,7 @@ function loadSalaryByMonth() {
 }
 // ============ /SALARY BY MONTH ============
 
-// ============ v50.8.0: RANK BY MONTH ============
+// ============ RANK BY MONTH ============
 export function persistRankByMonth() {
   try {
     localStorage.setItem(RANK_BY_MONTH_KEY, JSON.stringify(state.rankByMonth));
@@ -243,7 +243,7 @@ function loadRankByMonth() {
 }
 // ============ /RANK BY MONTH ============
 
-// ============ v50.8.2: LOAD STATE (HARDENED) ============
+// ============ LOAD STATE (HARDENED) ============
 export function loadState() {
   // 1. Load records — an toàn với data hỏng
   let d = safeParseLocalStorage(STORAGE_KEYS.records, null);
@@ -262,7 +262,7 @@ export function loadState() {
     d = { delivery: [], pickup: [], return: [] };
   }
 
-  // Sanitize từng loại (v50.11.5: sanitize cả weights)
+  // Sanitize từng loại (sanitize cả weights)
   state.appData = {
     delivery: sanitizeRecords(d.delivery),
     pickup:   sanitizeRecords(d.pickup),
