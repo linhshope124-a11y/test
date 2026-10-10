@@ -6,7 +6,7 @@
 import { state } from './state.js';
 import { WEIGHT_KEYS } from './config.js';
 import { getTodayIso, formatDateDisplay, generateId } from './utils.js';
-import { openAddModal, openEditModal, switchModalSubTab, showToast } from './ui.js';
+import { openAddModal, openEditModal, switchModalSubTab, showToast, isAutoSaveOCR } from './ui.js';
 import { updateAllViews } from './render.js';
 import { showConfirm, showAlert } from './dialog.js';
 import {
@@ -709,6 +709,7 @@ function validateDistribution(weights) {
 // ==================== AUTO-SAVE ====================
 async function tryAutoSave(r) {
   if (DISABLE_AUTO_SAVE) return false;
+  if (!isAutoSaveOCR()) return false;   // ⭐ Toggle "Tự lưu OCR"
   if (String(r.mode || '').includes('+fix')) return false;
 
   const type = getTypeFromResult(r);
