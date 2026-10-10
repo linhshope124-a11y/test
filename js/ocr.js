@@ -1,8 +1,3 @@
-// =============================================================
-// OCR ENGINE — PART 1/2
-// Imports · Config · Worker · Preprocess · Parse · Post-process
-// =============================================================
-
 import { state } from './state.js';
 import { WEIGHT_KEYS } from './config.js';
 import { getTodayIso, formatDateDisplay, generateId } from './utils.js';
@@ -12,8 +7,7 @@ import { showConfirm, showAlert } from './dialog.js';
 import {
   cacheGetAsync, cacheSet,
   clearOcrCache as _clearOcrCacheImpl,
-  getOcrCacheStats as _getOcrCacheStatsImpl,
-  initOcrCache, refreshOcrCacheStats
+  initOcrCache, getOcrCacheStats, refreshOcrCacheStats
 } from './ocr-cache.js';
 
 export { getOcrCacheStats, initOcrCache, refreshOcrCacheStats } from './ocr-cache.js';
@@ -407,11 +401,11 @@ function parseOcrText(cleanText) {
   const totalPos = totalMatch ? totalMatch.index : -1;
   const totalEnd = totalMatch ? totalMatch.index + totalMatch[0].length : -1;
 
-  // ⭐ FIX 1: donRegex accept "ơn" hoặc "on" (mất dấu)
+  // donRegex accept "ơn" hoặc "on" (mất dấu)
   const donNums = [];
   const donRegex = /(\d{1,5})\s*[ĐDđd]\s*[ơo]n\b/gi;
   while ((m = donRegex.exec(text)) !== null) {
-    // ⭐ FIX 2: Bỏ dòng "Tổng N đơn hàng" chữ thường (không phải "Đơn" hoa)
+    // Bỏ "Tổng N đơn hàng" (chữ thường, không phải "Đơn" hoa)
     if (!/[ĐD]/.test(m[0])) continue;
 
     const val = parseInt(m[1], 10);
@@ -434,7 +428,7 @@ function parseOcrText(cleanText) {
     if (totalPos >= 0 && pos >= totalPos && pos <= totalEnd + 3) continue;
     if (val === 0) continue;
     if (val > 99999) continue;
-    // ⭐ Bỏ số dính chữ (h2, ab3...)
+    // Bỏ số dính chữ (h2, ab3)
     if (pos > 0 && /[A-Za-zÀ-ỹ]/.test(text[pos - 1])) continue;
     nums.push({ value: val, pos, endPos });
   }
@@ -519,6 +513,13 @@ function parseOcrText(cleanText) {
 }
 
 // ==================== POST-PROCESS: Fix chữ số nhầm ====================
+/**
+ * Font SPX hay đọc nhầm các cặp chữ số do nét mảnh:
+ *   9 → 2, 7 → 1, 6 → 8, 5 → 6, 3 → 8
+ *
+ * Hàm thử đổi từng chữ số để sum khớp total.
+ * ⚠️ Đây là ĐOÁN — conf 75% (vàng) + user phải đối chiếu ảnh.
+ */
 function postProcessFixDigits(parsed) {
   if (parsed.expectedTotal === null) return null;
   if (parsed.totalFound === parsed.expectedTotal) return null;
@@ -550,7 +551,7 @@ function postProcessFixDigits(parsed) {
         if (newTotal === parsed.expectedTotal) {
           return {
             weights: { ...parsed.weights, [key]: newVal },
-            confidences: { ...parsed.confidences, [key]: 60 },
+            confidences: { ...parsed.confidences, [key]: 75 },   // vàng: user check
             expectedTotal: parsed.expectedTotal,
             totalFound: newTotal,
             mode: parsed.mode + '+fix' + s.from + s.to
@@ -598,18 +599,7 @@ function extractDate(text) {
 
   return getTodayIso();
 }
-
-// =============================================================
-// HẾT PART 1 — Chờ "ok" để gửi PART 2
-// =============================================================
-// =============================================================
-// OCR ENGINE — PART 2/2
-// Batch state · Smart Pipeline (Scale Diversity) · Modals · Exports
-// =============================================================
-
-// ==================== LOG STORAGE ====================
 let _lastOcrLog = '';
-
 // ==================== BATCH STATE ====================
 let batchResults = [];
 let pendingAppend = false;
@@ -701,7 +691,7 @@ function validateDistribution(weights) {
 // ==================== AUTO-SAVE ====================
 async function tryAutoSave(r) {
   if (DISABLE_AUTO_SAVE) return false;
-  if (String(r.mode || '').includes('+fix')) return false;
+  if (String(r.mode || '').includes('+fix')) return false;   // đoán chữ số → để user xác nhận
 
   const type = getTypeFromResult(r);
   if (!type) return false;
@@ -726,27 +716,6 @@ async function tryAutoSave(r) {
   if (pushUndoFn) {
     pushUndoFn({
       msg: `OCR tự lưu ${getTypeLabel(r)} ${formatDateDisplay(r.parsedDate)}`,
-      restore: () => {
-        state.appData[type] = state.appData[type].filter(it => it.id !== newId);
-      }
-    });
-  }
-
-  state.appData[type].unshift({ id: newId, date: r.parsedDate, weights });
-  updateAllViews();
-  return true;
-}
-
-async function tryAutoSaveForce(r) {
-  const type = getTypeFromResult(r);
-  if (!type) return false;
-  const weights = buildWeights(r);
-  const newId = generateId();
-
-  const pushUndoFn = await ensurePushUndo();
-  if (pushUndoFn) {
-    pushUndoFn({
-      msg: `OCR lưu ${getTypeLabel(r)} ${formatDateDisplay(r.parsedDate)}`,
       restore: () => {
         state.appData[type] = state.appData[type].filter(it => it.id !== newId);
       }
@@ -987,7 +956,7 @@ async function _runOcrFromFiles(files, wasAppend = false) {
   }
 }
 
-// ==================== PROCESS ONE FILE — SMART PIPELINE + SCALE DIVERSITY ====================
+// ==================== PROCESS ONE FILE — 6-PASS SMART PIPELINE ====================
 async function processOneFile(file, signal) {
   _checkAborted(signal);
 
@@ -1020,16 +989,14 @@ async function processOneFile(file, signal) {
   const statusDesc = document.getElementById('ocrStatusDesc');
 
   // ═══════════════════════════════════════════════════════════
-  //  SMART PIPELINE — Scale Diversity
-  //  80% ảnh dừng ở Pass 1 (~2s)
-  //  Ảnh khó → thử thêm các scale khác (Tesseract đọc sai 9→2, 5→9 ở một số scale)
+  //  SMART PIPELINE — 6 pass (scale diversity)
+  //  80% ảnh dừng ở Pass 1 (~2s). Ảnh khó → thử thêm scale.
   // ═══════════════════════════════════════════════════════════
 
   let bestResult = null;
   let bestText = '';
   let bestDiff = 9999;
 
-  // Hàm chạy 1 pass — chỉ update nếu diff tốt hơn
   async function runPass(label, opt) {
     _checkAborted(signal);
     if (statusDesc) statusDesc.innerText = `Quét ${label}...`;
@@ -1048,42 +1015,41 @@ async function processOneFile(file, signal) {
     return diff;
   }
 
-  // ========== PASS 1: Otsu @ 2.0 — baseline, 80% cases đúng ở đây ==========
+  // Pass 1: Otsu @ 2.0 — baseline
   await runPass('1/6', { upscale: 2.0, useOtsu: true });
 
-  // ========== PASS 2: Threshold 70 @ 2.0 — giữ nét đuôi 9 ==========
+  // Pass 2: Threshold 70 @ 2.0 — giữ nét đuôi 9
   if (bestDiff > 0 && bestDiff !== 9999) {
     await runPass('2/6', { upscale: 2.0, useOtsu: false, threshold: 70 });
   }
 
-  // ========== PASS 3: RAW @ 2.0 — Tesseract tự adaptive threshold ==========
+  // Pass 3: RAW @ 2.0
   if (bestDiff > 0 && bestDiff !== 9999) {
     await runPass('3/6', { upscale: 2.0, raw: true });
   }
 
-  // ========== PASS 4: RAW @ 1.5 — SCALE DIVERSITY ==========
-  // ⭐ FIX: Ở scale 2.0, Tesseract đọc "52" thành "92"; ở 1.5 đọc đúng
+  // Pass 4: RAW @ 1.5 — scale diversity
   if (bestDiff > 0 && bestDiff !== 9999) {
     await runPass('4/6', { upscale: 1.5, raw: true });
   }
 
-  // ========== PASS 5: Otsu @ 2.25 — SCALE DIVERSITY ==========
+  // Pass 5: Otsu @ 2.25 — scale diversity
   if (bestDiff > 0 && bestDiff !== 9999) {
     await runPass('5/6', { upscale: 2.25, useOtsu: true });
   }
 
-  // ========== PASS 6: Otsu @ 1.75 — SCALE DIVERSITY ==========
+  // Pass 6: Otsu @ 1.75 — scale diversity
   if (bestDiff > 0 && bestDiff !== 9999) {
     await runPass('6/6', { upscale: 1.75, useOtsu: true });
   }
 
-  // ========== ĐOÁN CHỮ SỐ — chỉ sau khi mọi lần quét thật đều lệch ==========
+  // Post-process: đoán chữ số nếu vẫn lệch
   if (bestResult && bestDiff > 0) {
     const fixed = postProcessFixDigits(bestResult);
     if (fixed) { bestResult = fixed; bestDiff = 0; }
   }
 
-  // Fallback nếu không có pass nào chạy (trường hợp hiếm)
+  // Fallback nếu không pass nào chạy
   if (!bestResult) {
     const pre = await preprocessImage(rawDataUrl, { upscale: 2.0, useOtsu: true }, signal);
     const text = await ocrRecognize(pre.dataUrl, signal);
