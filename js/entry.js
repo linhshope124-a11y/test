@@ -6,6 +6,7 @@ import { updateAllViews } from './render.js';
 import { hasBatchPending, backToBatch } from './ocr.js';
 import { pushUndo } from './undo.js';
 import { showAlert, showConfirm } from './dialog.js';
+import { downloadBackupFile } from './backup.js';
 
 function parseWeights(prefix) {
   const out = {};
@@ -162,21 +163,59 @@ export async function deleteRecord(type, id) {
   updateAllViews();
 }
 
+// ⭐ CẬP NHẬT: Bắt backup trước khi xóa toàn bộ
 export async function clearAllHistory() {
   const total = state.appData.delivery.length + state.appData.pickup.length + state.appData.return.length;
-  if (total === 0) return;
+  if (total === 0) {
+    await showAlert('Không có bản ghi nào để xóa.', { title: 'Không có dữ liệu', okText: 'Đóng' });
+    return;
+  }
 
-  const ok = await showConfirm(
-    `Bạn chắc chắn muốn xóa toàn bộ ${total} bản ghi?\n\nBản sao lưu tự động cũng sẽ bị xóa.\nKhông thể khôi phục!`,
+  // ═══════════════════════════════════════════════════════════
+  //  DIALOG 1: Bắt buộc tải file backup trước
+  // ═══════════════════════════════════════════════════════════
+  const step1 = await showConfirm(
+    `⚠️ Bạn sắp xóa TOÀN BỘ ${total} bản ghi.\n\n` +
+    `Hành động này KHÔNG THỂ KHÔI PHỤC.\n\n` +
+    `📥 Bước 1: Tải file backup về máy để giữ lại dữ liệu.\n\n` +
+    `File sẽ lưu vào thư mục Downloads với tên:\n` +
+    `SPX_BeforeDelete_YYYY-MM-DD.json`,
     {
-      title: '⚠️ Xóa toàn bộ',
-      okText: 'Xóa hết',
+      title: '⚠️ Xóa toàn bộ — Bước 1/2',
+      okText: '📥 Lưu file backup',
       cancelText: 'Hủy',
       danger: true
     }
   );
-  if (!ok) return;
 
+  if (!step1) return;
+
+  // ⚠️ Trigger download NGAY trong stack này để browser cho phép
+  downloadBackupFile('SPX_BeforeDelete');
+
+  // Đợi 600ms cho browser bắt đầu tải file
+  await new Promise(r => setTimeout(r, 600));
+
+  // ═══════════════════════════════════════════════════════════
+  //  DIALOG 2: Xác nhận đã tải xong → xóa
+  // ═══════════════════════════════════════════════════════════
+  const step2 = await showConfirm(
+    `📁 File backup đã tải về thư mục Downloads chưa?\n\n` +
+    `Nếu đã có file → bấm XÓA HẾT.\n` +
+    `Nếu chưa thấy file → bấm HỦY, kiểm tra lại.`,
+    {
+      title: '⚠️ Xóa toàn bộ — Bước 2/2',
+      okText: 'XÓA HẾT',
+      cancelText: 'Hủy',
+      danger: true
+    }
+  );
+
+  if (!step2) return;
+
+  // ═══════════════════════════════════════════════════════════
+  //  Tiến hành xóa (có undo)
+  // ═══════════════════════════════════════════════════════════
   const backup = deepClone(state.appData);
   const vaultBackup = localStorage.getItem('spx_backup_vault');
 
