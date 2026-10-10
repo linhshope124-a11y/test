@@ -1,5 +1,15 @@
-const CACHE = 'spx-tracker-v553';
-const SHARE_CACHE = 'spx-shared-files';
+// =============================================================
+// SPX Tracker — Service Worker
+// Cache: app shell (CACHE) + Tesseract (TESS_CACHE) + Share Target
+//
+// ⚠️ MỖI LẦN SỬA FILE TRONG CORE → BUMP CACHE VERSION
+//    - spx-tracker-v3 → spx-tracker-v4 → ...
+//    - TESS_CACHE và SHARE_CACHE KHÔNG cần bump (dữ liệu không đổi)
+// =============================================================
+
+const CACHE       = 'spx-tracker-v10';      // ⭐ v3 — sau patch #1, #2, #3
+const TESS_CACHE  = 'spx-tesseract-v1';    // giữ nguyên — Tesseract không đổi
+const SHARE_CACHE = 'spx-shared-files';    // giữ nguyên — dữ liệu tạm
 
 const CORE = [
   './',
@@ -16,7 +26,8 @@ const CORE = [
   './js/calc.js',
   './js/theme.js',
   './js/ocr.js',
-  './js/ocrcache.js',
+  './js/ocr-cache.js',      // ⭐ PATCH #3: file mới
+  './js/sw-bridge.js',      // ⭐ PATCH #2: file mới
   './js/ui.js',
   './js/render.js',
   './js/entry.js',
@@ -26,11 +37,21 @@ const CORE = [
   './js/dialog.js'
 ];
 
+// ==================== TESSERACT RUNTIME URLs ====================
+// Khi user bấm 📷 lần đầu, 3 URL này được precache.
+// Lần sau OCR chạy được cả khi offline.
+const TESS_RUNTIME_URLS = [
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+  'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd.wasm.js',
+  'https://tessdata.projectnaptha.com/4.0.0/vie.traineddata.gz'
+];
+
 // ==================== INSTALL ====================
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE).then(c => c.addAll(CORE))
-    // KHÔNG skipWaiting ngay — chờ user bấm "Cập nhật"
+    // KHÔNG skipWaiting — chờ user bấm "Cập nhật"
   );
 });
 
@@ -40,7 +61,7 @@ self.addEventListener('activate', e => {
     caches.keys()
       .then(keys => Promise.all(
         keys
-          .filter(k => k !== CACHE && k !== SHARE_CACHE)
+          .filter(k => k !== CACHE && k !== TESS_CACHE && k !== SHARE_CACHE)
           .map(k => caches.delete(k))
       ))
       .then(() => self.clients.claim())
@@ -57,8 +78,36 @@ self.addEventListener('activate', e => {
 
 // ==================== MESSAGE ====================
 self.addEventListener('message', e => {
-  if (e.data && e.data.type === 'SKIP_WAITING') {
+  const data = e.data || {};
+
+  if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+
+  // 📷 Precache Tesseract khi user thực sự dùng OCR
+  if (data.type === 'PRECACHE_TESSERACT') {
+    e.waitUntil(
+      caches.open(TESS_CACHE).then(async cache => {
+        const results = await Promise.allSettled(
+          TESS_RUNTIME_URLS.map(async url => {
+            const existing = await cache.match(url);
+            if (existing) return 'cached';
+            try {
+              const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+              if (res.ok) {
+                await cache.put(url, res.clone());
+                return 'fetched';
+              }
+              return 'failed:' + res.status;
+            } catch (err) {
+              return 'error:' + err.message;
+            }
+          })
+        );
+        return results.map(r => r.value || r.reason);
+      })
+    );
   }
 });
 
@@ -67,13 +116,11 @@ async function handleShareTarget(request) {
   try {
     const formData = await request.formData();
     const rawFiles = formData.getAll('images');
-
     const files = rawFiles.filter(f =>
       f && typeof f === 'object' && typeof f.size === 'number' && f.size > 0
     );
 
     const cache = await caches.open(SHARE_CACHE);
-
     const oldKeys = await cache.keys();
     await Promise.all(oldKeys.map(k => cache.delete(k)));
 
@@ -102,9 +149,7 @@ async function handleShareTarget(request) {
         );
       }
 
-      console.log(`[SW] Share target: đã lưu ${files.length} file vào cache`);
-    } else {
-      console.warn('[SW] Share target: không có file hợp lệ');
+      console.log(`[SW] Share target: đã lưu ${files.length} file`);
     }
   } catch (e) {
     console.warn('[SW] Share target error:', e);
@@ -114,10 +159,14 @@ async function handleShareTarget(request) {
   return Response.redirect(redirectUrl, 303);
 }
 
-// ==================== STATIC ASSET DETECT ====================
+// ==================== STATIC DETECT ====================
 function _isStaticAsset(pathname) {
   if (pathname.endsWith('/version.json')) return false;
   return /\.(html|css|js|png|jpg|jpeg|svg|webp|gif|ico|woff|woff2|ttf|otf)$/i.test(pathname);
+}
+
+function _isTesseractUrl(url) {
+  return TESS_RUNTIME_URLS.some(u => url.startsWith(u.split('?')[0]));
 }
 
 // ==================== FETCH ====================
@@ -129,12 +178,34 @@ self.addEventListener('fetch', e => {
   if (req.method === 'POST') {
     if (url.origin === self.location.origin && url.pathname.endsWith('/share-target')) {
       e.respondWith(handleShareTarget(req));
-      return;
     }
     return;
   }
 
   if (req.method !== 'GET') return;
+
+  // ===== Tesseract URLs (cross-origin) =====
+  // Cache-first từ TESS_CACHE. Nếu chưa có → fetch rồi cache.
+  if (_isTesseractUrl(req.url)) {
+    e.respondWith(
+      caches.open(TESS_CACHE).then(async cache => {
+        const cached = await cache.match(req.url);
+        if (cached) return cached;
+        try {
+          const res = await fetch(req);
+          if (res && res.status === 200 && res.type !== 'opaque') {
+            cache.put(req.url, res.clone()).catch(() => {});
+          }
+          return res;
+        } catch (err) {
+          return new Response('', { status: 503, statusText: 'Offline' });
+        }
+      })
+    );
+    return;
+  }
+
+  // ===== Same-origin requests =====
   if (url.origin !== self.location.origin) return;
 
   // version.json → luôn network (no-store)
@@ -143,17 +214,16 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Static assets → CACHE-FIRST
+  // Static assets → cache-first
   if (_isStaticAsset(url.pathname)) {
     e.respondWith(
       caches.match(req, { ignoreSearch: true }).then(cached => {
         if (cached) return cached;
-
         return fetch(req)
           .then(res => {
             if (res && res.status === 200) {
               const copy = res.clone();
-              caches.open(CACHE).then(c => c.put(req, copy));
+              caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
             }
             return res;
           })
@@ -169,7 +239,7 @@ self.addEventListener('fetch', e => {
       .then(res => {
         if (res && res.status === 200) {
           const copy = res.clone();
-          caches.open(CACHE).then(c => c.put(req, copy));
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
         }
         return res;
       })

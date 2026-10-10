@@ -1,14 +1,22 @@
 {
-  "name": "Theo Dõi Sản Lượng & Điểm SPX",
+  "name": "SPX Tracker",
   "short_name": "SPX Tracker",
-  "description": "Ứng dụng theo dõi sản lượng giao/lấy/hoàn và tính điểm SPX",
+  "description": "Theo dõi sản lượng giao/lấy/hoàn và tính điểm phúc lợi SPX Express",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "orientation": "portrait",
   "background_color": "#f8fafc",
   "theme_color": "#ff5722",
   "lang": "vi",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities", "business"],
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+
   "icons": [
     {
       "src": "./icons/icon-192.png",
@@ -33,6 +41,42 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+
+  "screenshots": [
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow"
+    }
+  ],
+
+  "shortcuts": [
+    {
+      "name": "Quét ảnh OCR",
+      "short_name": "Quét ảnh",
+      "description": "Mở camera quét sản lượng từ ảnh",
+      "url": "./index.html?action=ocr",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Nhật ký",
+      "short_name": "Nhật ký",
+      "description": "Xem lịch sử bản ghi",
+      "url": "./index.html?action=history",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     }
   ],
 
