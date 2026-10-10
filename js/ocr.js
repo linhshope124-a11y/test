@@ -18,8 +18,8 @@ import {
 export { getOcrCacheStats, initOcrCache, refreshOcrCacheStats } from './ocr-cache.js';
 
 // ==================== CONFIG ====================
-const DISABLE_AUTO_SAVE = true;
-const DRY_RUN_OCR       = false;
+const DISABLE_AUTO_SAVE = false;
+const DRY_RUN_OCR       = true;
 const OCR_TIMEOUT_MS    = 60000;
 
 // ==================== ABORT CONTROLLER ====================
